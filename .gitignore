@@ -1,0 +1,27 @@
+# Python files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# Git / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Pipeline temp / cache
+.gemini/
+.agents/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.tox/
+build/
+dist/
+*.egg-info/
+
+# Local configuration overrides
+local_config.json
+*.local

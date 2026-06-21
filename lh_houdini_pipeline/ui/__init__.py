@@ -1,0 +1,1 @@
+"""lh_houdini_pipeline.ui\n~~~~~~~~~~~~~~~~~~~~~~~~~\nQt widget layer.  All PySide2/PySide6 imports are contained here.\n\nModules:\n    widgets  -- reusable base widgets (labelled fields, path pickers)\n    tree     -- tree/list view helpers\n    signals  -- typed signal definitions\n    dialogs  -- modal and non-modal dialog base classes\n"""

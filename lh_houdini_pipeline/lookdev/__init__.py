@@ -1,0 +1,1 @@
+"""lh_houdini_pipeline.lookdev\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nLighting / LookDev domain layer.\n\nModules:\n    light_rig   -- programmatic light rig builder\n    turntable   -- turntable camera / animation helpers\n    calibration -- grey ball / chrome ball calibration utilities\n"""

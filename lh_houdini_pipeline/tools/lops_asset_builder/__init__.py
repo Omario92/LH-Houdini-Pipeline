@@ -1,0 +1,1 @@
+"""lh_houdini_pipeline.tools.lops_asset_builder\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nLOPs asset assembly: variant set builder, payload wiring, look binding.\n\nStub -- to be implemented.\n"""
