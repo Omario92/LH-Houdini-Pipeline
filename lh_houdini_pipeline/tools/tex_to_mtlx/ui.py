@@ -20,6 +20,7 @@ from typing import List, Optional
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.tex_to_mtlx import core as _core
 from lh_houdini_pipeline.tools.tex_to_mtlx import service as _service
+from lh_houdini_pipeline.ui import style as _style
 
 _log = get_logger(__name__)
 
@@ -130,6 +131,7 @@ class TexToMtlxWidget(QtWidgets.QWidget):
         build_sel.clicked.connect(self._on_build_selected)
         self._buttons.append(build_sel)
         build_all = QtWidgets.QPushButton("Build All")
+        build_all.setObjectName("primaryBtn")
         build_all.clicked.connect(self._on_build_all)
         self._buttons.append(build_all)
         # .tx conversion via SideFX imaketx (brick: materialx.tx).
@@ -153,6 +155,7 @@ class TexToMtlxWidget(QtWidgets.QWidget):
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
 
+        _style.apply(self)
         self.resize(460, 420)
 
     # -- handlers (delegate to core/service, never embed logic) ----------

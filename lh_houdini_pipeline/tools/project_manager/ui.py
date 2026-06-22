@@ -19,6 +19,7 @@ from typing import List, Optional
 
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.project_manager.controller import ProjectController
+from lh_houdini_pipeline.ui import style as _style
 
 _log = get_logger(__name__)
 
@@ -163,7 +164,7 @@ class ProjectManagerUI(QtWidgets.QWidget):
 
         self._build_ui()
         self._connect_controller()
-        self.setStyleSheet(_STYLESHEET)
+        self.setStyleSheet(_style.STYLE)
         self._on_validation(False, "Choose a root and project name.", "")
 
     # -- construction ---------------------------------------------------
@@ -261,10 +262,10 @@ class ProjectManagerUI(QtWidgets.QWidget):
         preview_btn = QtWidgets.QPushButton("Preview")
         preview_btn.clicked.connect(self._refresh_validation_and_preview)
         self._dryrun_btn = QtWidgets.QPushButton("Dry-run")
-        self._dryrun_btn.setObjectName("dryRunBtn")
+        self._dryrun_btn.setObjectName("warnBtn")
         self._dryrun_btn.clicked.connect(lambda: self._do_create(dry_run=True))
         self._create_btn = QtWidgets.QPushButton("Create Project")
-        self._create_btn.setObjectName("createBtn")
+        self._create_btn.setObjectName("primaryBtn")
         self._create_btn.clicked.connect(lambda: self._do_create(dry_run=False))
         btns.addWidget(preview_btn)
         btns.addStretch(1)
@@ -372,7 +373,7 @@ class ProjectManagerUI(QtWidgets.QWidget):
         self._can_create = can_create
         self._create_btn.setEnabled(can_create)
         self._dryrun_btn.setEnabled(can_create)
-        color = _VALID_COLORS.get(level, _VALID_COLORS[""])
+        color = _style.HINT_COLORS.get(level, _style.HINT_COLORS[''])
         self._preview_count.setStyleSheet("color: " + color + ";")
         if message:
             self._preview_count.setText(message)
@@ -404,12 +405,12 @@ class ProjectManagerUI(QtWidgets.QWidget):
         root_item.setExpanded(True)
         for i in range(root_item.childCount()):
             root_item.child(i).setExpanded(True)
-        self._preview_count.setStyleSheet("color: " + _VALID_COLORS[""] + ";")
+        self._preview_count.setStyleSheet("color: " + _style.HINT_COLORS[""] + ";")
         self._preview_count.setText(plan.summary())
 
     def _set_status(self, message: str, level: str = "info") -> None:
         """Update the status bar dot color and message."""
-        color = _STATUS_COLORS.get(level, _STATUS_COLORS["info"])
+        color = _style.STATUS_COLORS.get(level, _style.STATUS_COLORS['info'])
         self._status_dot.setStyleSheet("color: " + color + "; font-size: 13px;")
         self._status_text.setText(message)
 
