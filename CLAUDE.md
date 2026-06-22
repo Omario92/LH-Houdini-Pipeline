@@ -243,3 +243,4 @@ Khi viết code Houdini-specific:
 | 2026-06-22 | VERIFIED live H21.0.631: turntable ry 0->357 over 120f, orbit f1=+Z f31=+X, focal35/ap10x10; pure orbit-math test green |
 | 2026-06-22 | Added Camera Export feature (USD, Alembic, Nuke .nk) and USD baking to the Camera Manager |
 | 2026-06-22 | Implemented USD Camera Variants (focal length and transform VariantSets) with stacked python LOP architecture, resolving LIVRPS override issues |
+| 2026-06-22 | Implemented programmatic HDA packaging module (HDA creation, Python HDA modules, event scripts, dynamic ParmTemplateGroup) and test suite |
