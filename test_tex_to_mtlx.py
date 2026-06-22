@@ -111,6 +111,11 @@ def _basecolor_detected():
     assert len(bc) == 3, "expected 3 base color files, got " + str(len(bc))
 check("base color channel detected", _basecolor_detected)
 
+def _metallic_detected():
+    info = _parser.parse("texture_pbr_20250901_metallic.png")
+    assert info.channel is TextureChannel.METALNESS, info.channel
+check("metallic suffix detected as metalness", _metallic_detected)
+
 
 # ---------------------------------------------------------------------------
 # Planner / scan_and_plan

@@ -15,12 +15,15 @@ print("\n=== imports (no hou) ===")
 def _imp():
     from lh_houdini_pipeline.tools.project_manager import (
         plan_project, ProjectPlan, ProjectTemplate, create_project,
-        scan_projects, next_work_version, set_houdini_job, work_file_template)
+        scan_projects, next_work_version, set_houdini_job, work_file_template,
+        ProjectManagerSettings, load_settings, save_settings)
     from lh_houdini_pipeline.tools.project_manager import service
 check("project_manager imports without hou", _imp)
 
 from lh_houdini_pipeline.tools.project_manager import (
-    plan_project, create_project, scan_projects, next_work_version, work_file_template)
+    ProjectManagerSettings, ProjectTemplate, create_project, load_settings,
+    next_work_version, plan_project, preset_minimal, save_settings,
+    scan_projects, validate_folders, work_file_template)
 
 print("\n=== planning ===")
 def _basic_plan():
@@ -54,6 +57,25 @@ def _work_tmpl():
     assert "{entity}" in t and "{department}" in t and "{version:03d}" in t, t
     assert "/jobs/show/houdini/scenes/" in t, t
 check("work_file_template partial-resolves root/project", _work_tmpl)
+
+def _settings_roundtrip():
+    cfg_tmp=tempfile.mkdtemp(prefix="lh_pm_cfg_")
+    path=os.path.join(cfg_tmp,"project_manager_settings.json")
+    chosen=preset_minimal()
+    save_settings(ProjectManagerSettings(project_folders=chosen), path=path)
+    loaded=load_settings(path)
+    assert loaded.project_folders==chosen, loaded.project_folders
+    assert "geo" in loaded.project_folders and "houdini/scenes" not in loaded.project_folders
+check("settings JSON save/load selected folders", _settings_roundtrip)
+
+def _settings_filter_and_plan():
+    folders=validate_folders(["geo","unknown","tex","geo"])
+    assert folders==("geo","tex"), folders
+    p=plan_project("/jobs","tiny", template=ProjectTemplate(project_folders=folders))
+    assert "/jobs/tiny/geo" in p.directories
+    assert "/jobs/tiny/tex" in p.directories
+    assert "/jobs/tiny/render" not in p.directories
+check("settings folders drive project template", _settings_filter_and_plan)
 
 print("\n=== filesystem (real) ===")
 _tmp=tempfile.mkdtemp(prefix="lh_pm_")

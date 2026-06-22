@@ -108,7 +108,7 @@ _RAW_PATTERNS: List[Tuple[str, TextureChannel]] = [
     # Base color (must come before generic 'col' catch-all)
     (r"\b(base[_\-]?col(?:ou?r)?|albedo|diffuse|diff|col)\b",     TextureChannel.BASE_COLOR),
     # Metalness
-    (r"\b(metal(?:ness|ic)?|mtl)\b",                               TextureChannel.METALNESS),
+    (r"\b(metal(?:ness|lic|ic)?|mtl)\b",                           TextureChannel.METALNESS),
     # Roughness
     (r"\b(rough(?:ness)?|rgh)\b",                                  TextureChannel.ROUGHNESS),
     # Specular
