@@ -27,6 +27,7 @@ from typing import Optional, Tuple
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.lops_asset_builder import core as _core
 from lh_houdini_pipeline.tools.lops_asset_builder import service as _service
+from lh_houdini_pipeline.ui import style as _style
 
 _log = get_logger(__name__)
 
@@ -257,6 +258,7 @@ class LopsAssetBuilderWidget(QtWidgets.QWidget):
         btn_row.setSpacing(6)
         
         self._build_btn = QtWidgets.QPushButton("Build Asset")
+        self._build_btn.setObjectName("primaryBtn")
         self._build_btn.setToolTip("Build LOP network and save USD file synchronously on main thread.")
         self._build_btn.clicked.connect(lambda: self._on_build_triggered(background=False))
         self._build_btn.setStyleSheet("font-weight: bold; height: 24px;")
@@ -601,89 +603,8 @@ class LopsAssetBuilderWidget(QtWidgets.QWidget):
         self._status.setText(message)
 
     def _setup_stylesheet(self) -> None:
-        """Apply premium dark styling matching Houdini dark themes."""
-        self.setStyleSheet(
-            "QWidget {"
-            "    background-color: #2D2D2D;"
-            "    color: #DFDFDF;"
-            "    font-family: 'Segoe UI', Arial, sans-serif;"
-            "    font-size: 11px;"
-            "}"
-            "QLineEdit {"
-            "    background-color: #1E1E1E;"
-            "    border: 1px solid #3A3A3A;"
-            "    border-radius: 3px;"
-            "    padding: 4px;"
-            "    color: #EEEEEE;"
-            "}"
-            "QLineEdit:focus {"
-            "    border: 1px solid #ff9000;"
-            "}"
-            "QPushButton {"
-            "    background-color: #3E3E3E;"
-            "    border: 1px solid #4D4D4D;"
-            "    border-radius: 3px;"
-            "    padding: 5px 12px;"
-            "    min-width: 50px;"
-            "    color: #EEEEEE;"
-            "}"
-            "QPushButton:hover {"
-            "    background-color: #4E4E4E;"
-            "    border: 1px solid #ff9000;"
-            "}"
-            "QPushButton:pressed {"
-            "    background-color: #2E2E2E;"
-            "}"
-            "QPushButton:disabled {"
-            "    color: #666666;"
-            "    background-color: #282828;"
-            "    border: 1px solid #333333;"
-            "}"
-            "QProgressBar {"
-            "    border: 1px solid #3d3d3d;"
-            "    border-radius: 3px;"
-            "    text-align: center;"
-            "    background-color: #1a1a1a;"
-            "    color: white;"
-            "    font-weight: bold;"
-            "}"
-            "QProgressBar::chunk {"
-            "    background-color: #ff9000;"
-            "    width: 8px;"
-            "    margin: 0.5px;"
-            "}"
-            "QComboBox {"
-            "    background-color: #1E1E1E;"
-            "    border: 1px solid #3A3A3A;"
-            "    border-radius: 3px;"
-            "    padding: 3px 6px;"
-            "    color: #EEEEEE;"
-            "    min-width: 80px;"
-            "}"
-            "QComboBox::drop-down {"
-            "    border: none;"
-            "}"
-            "QCheckBox {"
-            "    spacing: 6px;"
-            "}"
-            "QCheckBox::indicator {"
-            "    border: 1px solid #3A3A3A;"
-            "    background-color: #1E1E1E;"
-            "    width: 13px;"
-            "    height: 13px;"
-            "    border-radius: 2px;"
-            "}"
-            "QCheckBox::indicator:checked {"
-            "    background-color: #ff9000;"
-            "    border: 1px solid #ff9000;"
-            "}"
-            "QToolTip {"
-            "    background-color: #1A1A1A;"
-            "    color: #DFDFDF;"
-            "    border: 1px solid #ff9000;"
-            "    padding: 4px;"
-            "}"
-        )
+        """Apply the shared pipeline dark theme (orange accent + blue action)."""
+        self.setStyleSheet(_style.STYLE)
 
 
 def launch(parent: Optional[object] = None) -> LopsAssetBuilderWidget:

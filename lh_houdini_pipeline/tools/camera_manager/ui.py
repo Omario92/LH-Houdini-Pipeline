@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.camera_manager import core as _core
 from lh_houdini_pipeline.tools.camera_manager import service as _service
+from lh_houdini_pipeline.ui import style as _style
 
 _log = get_logger(__name__)
 
@@ -74,6 +75,7 @@ class CameraManagerWidget(QtWidgets.QWidget):
         layout.addLayout(form)
 
         create_btn = QtWidgets.QPushButton("Create Camera")
+        create_btn.setObjectName("primaryBtn")
         create_btn.clicked.connect(self._on_create)
         layout.addWidget(create_btn)
 
@@ -110,6 +112,7 @@ class CameraManagerWidget(QtWidgets.QWidget):
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
 
+        _style.apply(self)
         self.resize(440, 420)
 
     # -- handlers -------------------------------------------------------
@@ -385,6 +388,7 @@ class CameraExportDialog(QtWidgets.QDialog):
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
 
+        _style.apply(self)
         self.resize(450, 200)
 
     def _on_browse(self) -> None:
@@ -474,6 +478,7 @@ class CameraVariantsDialog(QtWidgets.QDialog):
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+        _style.apply(self)
         self.resize(380, 250)
         
     def _on_type_changed(self) -> None:
