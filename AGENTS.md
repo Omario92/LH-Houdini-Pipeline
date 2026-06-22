@@ -13,6 +13,7 @@
 - Added Camera Export feature (USD, Alembic, Nuke .nk) and USD baking to the Camera Manager.
 - Added USD Camera Variants feature (VariantSets for focal lengths and angle transforms) to the Camera Manager.
 - Added programmatic HDA packaging module (HDA creation, Python HDA modules, event scripts, dynamic ParmTemplateGroup) and test suite.
+- Redesigned the LOPs Asset Builder UI with Drag & Drop support, collapsible advanced options (Simulation Proxy/Viewport Proxy Quality), color-coded logging panel, and threaded texture conversion.
 ---
 
 ## Houdini Reference & Rules

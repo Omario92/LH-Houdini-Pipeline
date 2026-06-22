@@ -244,3 +244,4 @@ Khi viết code Houdini-specific:
 | 2026-06-22 | Added Camera Export feature (USD, Alembic, Nuke .nk) and USD baking to the Camera Manager |
 | 2026-06-22 | Implemented USD Camera Variants (focal length and transform VariantSets) with stacked python LOP architecture, resolving LIVRPS override issues |
 | 2026-06-22 | Implemented programmatic HDA packaging module (HDA creation, Python HDA modules, event scripts, dynamic ParmTemplateGroup) and test suite |
+| 2026-06-22 | Redesigned the LOPs Asset Builder UI with Drag & Drop support, collapsible advanced options (Simulation Proxy/Viewport Proxy Quality), color-coded logging panel, and threaded texture conversion |

@@ -31,7 +31,15 @@ def _basic():
     assert p.root_prim=="/Hero_Prop_01"
     assert p.output_file is None
     assert p.geo_path is None
+    assert p.generate_proxy is False
+    assert p.proxy_quality == "Medium"
 check("name sanitised, defaults sane", _basic)
+
+def _proxy_planning():
+    p = plan_asset("Hero Prop 01", generate_proxy=True, proxy_quality="High")
+    assert p.generate_proxy is True
+    assert p.proxy_quality == "High"
+check("proxy planning configuration", _proxy_planning)
 
 def _output_file():
     p=plan_asset("box", output_dir="/out")

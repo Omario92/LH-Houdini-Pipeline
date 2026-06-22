@@ -195,6 +195,26 @@ def _load_geometry(cg: Any, plan: AssetBuildPlan) -> None:
     default_out = geo.node("default")
     if default_out is not None:
         _lop.connect(default_out, file_sop, 0)
+        
+    if plan.generate_proxy:
+        # Create a shrinkwrap SOP for the simulation proxy (convex hull)
+        hull_sop = _lop.create_node(geo, "shrinkwrap", "sim_proxy")
+        if hull_sop is not None:
+            _lop.connect(hull_sop, file_sop, 0)
+            sim_out = geo.node("simproxy")
+            if sim_out is not None:
+                _lop.connect(sim_out, hull_sop, 0)
+
+        # Create a polyreduce SOP for the viewport proxy
+        reduce_pct = {"Low": 10.0, "Medium": 30.0, "High": 60.0}.get(plan.proxy_quality, 30.0)
+        reduce_sop = _lop.create_node(geo, "polyreduce", "viewport_proxy")
+        if reduce_sop is not None:
+            _lop.connect(reduce_sop, file_sop, 0)
+            _lop.set_parm(reduce_sop, "percentage", reduce_pct)
+            proxy_out = geo.node("proxy")
+            if proxy_out is not None:
+                _lop.connect(proxy_out, reduce_sop, 0)
+                
     _lop.layout(geo)
 
 

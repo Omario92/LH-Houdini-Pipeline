@@ -65,6 +65,8 @@ class AssetBuildPlan:
     assignments:    Tuple[MaterialAssignment, ...] = field(default_factory=tuple)
     output_dir:     Optional[Path] = None
     output_ext:     str = ".usd"
+    generate_proxy: bool = False
+    proxy_quality:  str = "Medium"
 
     @property
     def root_prim(self) -> str:
@@ -109,6 +111,8 @@ def plan_asset(
     assignments: Optional[List[MaterialAssignment]] = None,
     recursive: bool = False,
     output_ext: str = ".usd",
+    generate_proxy: bool = False,
+    proxy_quality: str = "Medium",
 ) -> AssetBuildPlan:
     """Build an :class:`AssetBuildPlan` from simple inputs (dry-run safe).
 
@@ -160,6 +164,8 @@ def plan_asset(
         assignments=binds,
         output_dir=Path(output_dir) if output_dir is not None else None,
         output_ext=output_ext,
+        generate_proxy=generate_proxy,
+        proxy_quality=proxy_quality,
     )
     _log.info("Planned " + plan.summary())
     return plan
