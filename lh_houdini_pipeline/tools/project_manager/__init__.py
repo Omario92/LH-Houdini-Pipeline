@@ -27,6 +27,7 @@ from lh_houdini_pipeline.tools.project_manager.core import (
     ProjectPlan,
     ProjectTemplate,
     plan_project,
+    sanitize_name,
     work_file_template,
 )
 from lh_houdini_pipeline.tools.project_manager.service import (
@@ -43,6 +44,7 @@ __all__ = [
     "ProjectTemplate",
     "DEFAULT_TEMPLATE",
     "plan_project",
+    "sanitize_name",
     "work_file_template",
     "CreateResult",
     "create_project",

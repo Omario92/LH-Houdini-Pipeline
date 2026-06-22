@@ -107,6 +107,22 @@ def _sanitize(name: str) -> str:
     return "".join(out).strip("_-")
 
 
+def sanitize_name(name: str) -> str:
+    """Public, pure name sanitiser for UI live-suggestions.
+
+    Mirrors the rule used by :func:`plan_project`: keep alphanumerics, ``_``
+    and ``-``; replace everything else; strip leading/trailing separators.
+
+    Args:
+        name: Raw user-entered name.
+
+    Returns:
+        A filesystem-safe folder token (may be empty if *name* had no usable
+        characters).
+    """
+    return _sanitize(name)
+
+
 def plan_project(
     root: PathLike,
     project: str,
