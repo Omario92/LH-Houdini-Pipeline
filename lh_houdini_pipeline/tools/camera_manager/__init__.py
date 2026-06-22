@@ -22,14 +22,22 @@ from __future__ import annotations
 from lh_houdini_pipeline.tools.camera_manager.core import (
     CameraContext,
     CameraSpec,
+    CameraTiming,
+    MergePlan,
     ResolutionPreset,
+    TurntableSpec,
+    plan_merge,
     spec_from_preset,
 )
 from lh_houdini_pipeline.tools.camera_manager.service import (
     CameraInfo,
     apply_resolution,
+    camera_frame_range,
     create_camera,
+    delete_camera,
     list_cameras,
+    merge_cameras,
+    sync_playback_range,
 )
 
 __all__ = [
@@ -37,10 +45,18 @@ __all__ = [
     "CameraContext",
     "ResolutionPreset",
     "spec_from_preset",
+    "CameraTiming",
+    "MergePlan",
+    "TurntableSpec",
+    "plan_merge",
     "CameraInfo",
     "create_camera",
     "list_cameras",
     "apply_resolution",
+    "delete_camera",
+    "camera_frame_range",
+    "sync_playback_range",
+    "merge_cameras",
     "launch",
 ]
 

@@ -68,6 +68,37 @@ def _square_default_vertical():
     spec=CameraSpec(name="x")  # no resolution, no vertical
     assert spec.effective_vertical_aperture()==spec.horizontal_aperture
 check("no resolution -> vertical == horizontal", _square_default_vertical)
+print("\n=== merge planning (pure) ===")
+from lh_houdini_pipeline.tools.camera_manager import CameraTiming, plan_merge, TurntableSpec
+
+def _merge_two_animated():
+    plan = plan_merge([CameraTiming("A",1,10), CameraTiming("B",5,8)], start_frame=1001)
+    segs = {s.name: s for s in plan.segments}
+    # A first (start 1): offset 1000, dst 1001..1010
+    assert segs["A"].offset==1000 and segs["A"].dst_start==1001 and segs["A"].dst_end==1010, segs["A"]
+    # B next: starts at 1011, offset 1011-5=1006, dst 1011..1014
+    assert segs["B"].dst_start==1011 and segs["B"].offset==1006 and segs["B"].dst_end==1014, segs["B"]
+    assert plan.end_frame==1014, plan.end_frame
+check("merge: two animated cams placed end-to-end", _merge_two_animated)
+
+def _merge_static_after_animated():
+    plan = plan_merge([CameraTiming("stat"), CameraTiming("anim",1,5)], start_frame=1001)
+    segs = {s.name: s for s in plan.segments}
+    # animated first (1001..1005), static occupies single frame 1006
+    assert segs["anim"].dst_start==1001 and segs["anim"].dst_end==1005
+    assert segs["static" if "static" in segs else "stat"].is_static
+    assert segs["stat"].dst_start==1006 and segs["stat"].dst_end==1006, segs["stat"]
+    assert plan.end_frame==1006
+check("merge: static camera placed after animated", _merge_static_after_animated)
+
+def _turntable_angles():
+    tt = TurntableSpec(total_frames=120, start_frame=1)
+    assert tt.angle_at(0)==0.0
+    assert tt.angle_at(60)==180.0
+    assert tt.angle_at(120)==360.0
+    assert tt.frame_numbers()[0]==1 and tt.frame_numbers()[-1]==120
+check("turntable: angle_at sweeps 0..360", _turntable_angles)
+
 
 print("\n=== summary ===")
 if errors:

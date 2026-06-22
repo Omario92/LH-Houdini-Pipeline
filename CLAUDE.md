@@ -127,7 +127,7 @@ lh_houdini_pipeline/
 +-- tools/
     +-- project_manager/  [DONE] core(pure plan)+service(fs+$JOB)+ui(PySide)+launch: scaffold project/asset/shot tree
     +-- tex_to_mtlx/      [DONE] core(pure)+service(hou)+ui(PySide)+launch; MVP
-    +-- camera_manager/   [DONE] core(pure CameraSpec/parm-map)+service(hou)+ui(PySide)+launch: OBJ cam + USD camera
+    +-- camera_manager/   [DONE] core(CameraSpec/MergePlanner/TurntableSpec)+service(create/list/delete/merge/sync)+ui: OBJ cam + USD camera
     +-- lops_asset_builder/ [DONE] core+service(hou)+ui(PySide)+launch: componentgeo->componentmaterial->componentoutput
 ```
 
@@ -234,3 +234,7 @@ Khi viết code Houdini-specific:
 | 2026-06-21 | VERIFIED live H21.0.631: OBJ cam (focal/aperture/resx/resy) + USD camera (focalLength/clippingRange/vAperture derived) |
 | 2026-06-21 | Added test_camera_manager.py (8 pure assertions); ALL tools/ now DONE (tex_to_mtlx, lops_asset_builder, project_manager, camera_manager) |
 | 2026-06-22 | Bugfix: tool __init__.launch imported same-named '.launch' submodule, which shadowed the package 'launch' function after first call (-> 'module not callable' on 2nd open). Now imports ui directly; verified opening twice OK on all 4 tools |
+| 2026-06-22 | camera_manager: delete_camera + camera_frame_range + sync_playback_range (Week08 playbar sync) |
+| 2026-06-22 | camera_manager: pure plan_merge (sequential offsets) + service merge_cameras with static-interpolation fix (Week08) |
+| 2026-06-22 | camera_manager UI: Delete/Sync/Merge buttons; added TurntableSpec (pure) for next slice |
+| 2026-06-22 | VERIFIED live H21.0.631: merge tx offsets + focal hold-keys (no drift @1005=50/@1012=85); delete/sync OK; UI handlers OK |

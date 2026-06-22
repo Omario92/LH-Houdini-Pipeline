@@ -79,7 +79,20 @@ class CameraManagerWidget(QtWidgets.QWidget):
 
         layout.addWidget(QtWidgets.QLabel("Existing cameras:"))
         self._list = QtWidgets.QListWidget()
+        self._list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         layout.addWidget(self._list, 1)
+
+        ops_row = QtWidgets.QHBoxLayout()
+        self._delete_btn = QtWidgets.QPushButton("Delete Selected")
+        self._delete_btn.clicked.connect(self._on_delete)
+        self._sync_btn = QtWidgets.QPushButton("Sync Playbar")
+        self._sync_btn.clicked.connect(self._on_sync)
+        self._merge_btn = QtWidgets.QPushButton("Merge All (OBJ)")
+        self._merge_btn.clicked.connect(self._on_merge)
+        ops_row.addWidget(self._delete_btn)
+        ops_row.addWidget(self._sync_btn)
+        ops_row.addWidget(self._merge_btn)
+        layout.addLayout(ops_row)
 
         self._status = QtWidgets.QLabel("Ready.")
         self._status.setWordWrap(True)
@@ -124,11 +137,61 @@ class CameraManagerWidget(QtWidgets.QWidget):
         for info in cams:
             res = ("  " + str(info.resolution[0]) + "x" + str(info.resolution[1])
                    if info.resolution else "")
-            self._list.addItem(
+            item = QtWidgets.QListWidgetItem(
                 info.path + "   f=" + str(round(info.focal_length, 1)) + "mm" + res
             )
+            item.setData(QtCore.Qt.UserRole, info.path)
+            self._list.addItem(item)
         self._set_status(str(len(cams)) + " camera(s) in "
                          + self._current_context().value)
+
+    def _selected_paths(self):
+        """Return camera paths for the selected list rows."""
+        return [it.data(QtCore.Qt.UserRole) for it in self._list.selectedItems()]
+
+    def _on_delete(self) -> None:
+        """Delete the selected cameras."""
+        paths = self._selected_paths()
+        if not paths:
+            self._set_status("Select camera(s) to delete.", error=True)
+            return
+        deleted = sum(1 for p in paths if _service.delete_camera(p))
+        self._refresh()
+        self._set_status("Deleted " + str(deleted) + "/" + str(len(paths)) + " camera(s).")
+
+    def _on_sync(self) -> None:
+        """Sync the playbar to the first selected camera's animation range."""
+        paths = self._selected_paths()
+        if not paths:
+            self._set_status("Select a camera to sync playbar from.", error=True)
+            return
+        try:
+            start, end = _service.sync_playback_range(paths[0])
+        except Exception as exc:  # noqa: BLE001
+            self._set_status("Sync failed: " + str(exc), error=True)
+            return
+        self._set_status("Playbar -> " + str(start) + "-" + str(end) + " (" + paths[0] + ")")
+
+    def _on_merge(self) -> None:
+        """Merge all OBJ cameras sequentially into one camera."""
+        if self._current_context() is not _core.CameraContext.OBJ:
+            self._set_status("Merge works on OBJ cameras only.", error=True)
+            return
+        cams = [i.path for i in _service.list_cameras(_core.CameraContext.OBJ)]
+        if len(cams) < 2:
+            self._set_status("Need at least 2 OBJ cameras to merge.", error=True)
+            return
+        try:
+            path = _service.merge_cameras(cams)
+        except Exception as exc:  # noqa: BLE001
+            self._set_status("Merge failed: " + str(exc), error=True)
+            _log.exception("merge failed")
+            return
+        if path:
+            self._refresh()
+            self._set_status("Merged " + str(len(cams)) + " cameras -> " + path)
+        else:
+            self._set_status("Merge failed (see log).", error=True)
 
     def _set_status(self, message: str, error: bool = False) -> None:
         """Update the status label (red on error)."""

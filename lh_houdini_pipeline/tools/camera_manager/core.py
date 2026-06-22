@@ -152,3 +152,140 @@ def spec_from_preset(
         fstop=fstop,
         resolution=(preset.width, preset.height),
     )
+
+
+# ---------------------------------------------------------------------------
+# Camera merging (Week 08: sequential merge + static-interpolation fix)
+# ---------------------------------------------------------------------------
+
+#: OBJ camera parms checked for animation / copied when merging.
+CAMERA_ANIM_PARMS: Tuple[str, ...] = (
+    "tx", "ty", "tz", "rx", "ry", "rz", "focal", "aperture", "fstop",
+)
+
+
+@dataclass(frozen=True)
+class CameraTiming:
+    """Source-camera timing for a merge.
+
+    Attributes:
+        name:  Camera name / identifier.
+        start: First animated frame, or ``None`` for a static camera.
+        end:   Last animated frame, or ``None`` for a static camera.
+    """
+    name:  str
+    start: Optional[int] = None
+    end:   Optional[int] = None
+
+    @property
+    def is_static(self) -> bool:
+        """``True`` if the camera has no animation range."""
+        return self.start is None or self.end is None
+
+
+@dataclass(frozen=True)
+class MergeSegment:
+    """One camera's placement on the merged timeline.
+
+    Attributes:
+        name:      Source camera name.
+        is_static: ``True`` if the source had no animation.
+        offset:    Frame offset added to source keyframes (animated only).
+        src_start: Source first frame (animated only).
+        src_end:   Source last frame (animated only).
+        dst_start: First frame this segment occupies on the merged timeline.
+        dst_end:   Last frame this segment occupies on the merged timeline.
+    """
+    name:      str
+    is_static: bool
+    offset:    int
+    src_start: Optional[int]
+    src_end:   Optional[int]
+    dst_start: int
+    dst_end:   int
+
+
+@dataclass(frozen=True)
+class MergePlan:
+    """Ordered placement of all source cameras on a single merged timeline."""
+    segments:    Tuple[MergeSegment, ...]
+    start_frame: int
+    end_frame:   int
+
+    def summary(self) -> str:
+        """One-line human summary for logs / status labels."""
+        return (
+            str(len(self.segments)) + " camera(s) -> frames "
+            + str(self.start_frame) + "-" + str(self.end_frame)
+        )
+
+
+def plan_merge(timings: List[CameraTiming], start_frame: int = 1001) -> MergePlan:
+    """Lay source cameras end-to-end on one timeline (pure; Week 08 algorithm).
+
+    Animated cameras come first (ordered by their start frame, then name);
+    static cameras follow. Each animated camera keeps its internal length and
+    is shifted so segments never overlap; each static camera occupies a single
+    frame.
+
+    Args:
+        timings:     Per-camera :class:`CameraTiming`.
+        start_frame: First frame of the merged timeline (default ``1001``).
+
+    Returns:
+        A :class:`MergePlan` with one :class:`MergeSegment` per camera.
+    """
+    def _key(t: CameraTiming):
+        return (0, t.start, t.name) if not t.is_static else (1, 0, t.name)
+
+    ordered = sorted(timings, key=_key)
+    segments: List[MergeSegment] = []
+    cur = start_frame
+
+    for t in ordered:
+        if not t.is_static:
+            offset = cur - int(t.start)
+            dst_start = cur
+            dst_end = cur + (int(t.end) - int(t.start))
+            segments.append(MergeSegment(
+                t.name, False, offset, int(t.start), int(t.end), dst_start, dst_end))
+            cur += (int(t.end) - int(t.start) + 1)
+        else:
+            segments.append(MergeSegment(t.name, True, 0, None, None, cur, cur))
+            cur += 1
+
+    return MergePlan(tuple(segments), start_frame, cur - 1)
+
+
+# ---------------------------------------------------------------------------
+# Turntable (Week 10: 360-degree lookdev spin)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class TurntableSpec:
+    """Parameters for a 360-degree lookdev turntable camera.
+
+    Defaults follow the Week 10 lookdev convention (square 1:1 frame).
+
+    Attributes:
+        total_frames: Number of frames for a full 360-degree spin.
+        start_frame:  First frame of the spin.
+        pitch_deg:    Downward pitch of the camera (degrees).
+        focal_length: Focal length (mm).
+        aperture:     Horizontal == vertical aperture (mm) -> 1:1 frame.
+        name:         Camera node name.
+    """
+    total_frames: int   = 120
+    start_frame:  int   = 1
+    pitch_deg:    float = 20.0
+    focal_length: float = 35.0
+    aperture:     float = 10.0
+    name:         str   = "turntable_cam"
+
+    def angle_at(self, index: int) -> float:
+        """Spin angle (degrees) at *index* frames into the turntable."""
+        return (index / self.total_frames) * 360.0 if self.total_frames else 0.0
+
+    def frame_numbers(self) -> List[int]:
+        """The absolute frame numbers the turntable spans."""
+        return list(range(self.start_frame, self.start_frame + self.total_frames))
