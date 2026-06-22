@@ -125,7 +125,7 @@ lh_houdini_pipeline/
 +-- ui/                   [stubs] widgets, tree, signals, dialogs
 +-- interactive/          [stubs] raycast, drawables, state
 +-- tools/
-    +-- project_manager/  [DONE] core(pure plan)+service(fs+$JOB)+ui(PySide)+launch: scaffold project/asset/shot tree
+    +-- project_manager/  [DONE] core(+sanitize_name)+service+controller(QObject signals)+ui(dark-theme PySide6)+launch
     +-- tex_to_mtlx/      [DONE] core(pure)+service(hou)+ui(PySide)+launch; MVP
     +-- camera_manager/   [DONE] core(CameraSpec/MergePlanner/TurntableSpec)+service(create/list/delete/merge/sync)+ui: OBJ cam + USD camera
     +-- lops_asset_builder/ [DONE] core+service(hou)+ui(PySide)+launch: componentgeo->componentmaterial->componentoutput
@@ -245,3 +245,6 @@ Khi viết code Houdini-specific:
 | 2026-06-22 | Implemented USD Camera Variants (focal length and transform VariantSets) with stacked python LOP architecture, resolving LIVRPS override issues |
 | 2026-06-22 | Implemented programmatic HDA packaging module (HDA creation, Python HDA modules, event scripts, dynamic ParmTemplateGroup) and test suite |
 | 2026-06-22 | Redesigned the LOPs Asset Builder UI with Drag & Drop support, collapsible advanced options (Simulation Proxy/Viewport Proxy Quality), color-coded logging panel, and threaded texture conversion |
+| 2026-06-22 | project_manager: added controller.py (ProjectController QObject: validate/preview/create signals) + core.sanitize_name |
+| 2026-06-22 | project_manager UI redesign (PySide6 dark theme): 3-zone cards, drag&drop root, real-time validation, QTreeWidget preview, status bar, collapsible log, Dry-run/Create |
+| 2026-06-22 | VERIFIED live PySide6: validation gating, sanitize hint, tree preview (37 dirs), dry-run no-write, create+\$JOB, exists-warning, minimal-toggle |
