@@ -1,120 +1,196 @@
 # LH Houdini Pipeline
 
-[![Python](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/)
-[![Houdini](https://img.shields.io/badge/Houdini-19.5+-orange.svg)](https://www.sidefx.com/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+A component-based Houdini pipeline framework. The design philosophy is to build
+small, reusable "Lego brick" components first (pure, testable, no Houdini
+dependency where possible) and compose them into tools later. All Houdini
+(`hou`) and Qt (PySide) usage is isolated to specific layers so the core of the
+framework runs and unit-tests with plain `python` outside of Houdini.
 
-A component-based Houdini pipeline framework. Designed with a modular, Lego-brick philosophy where reusable components are built first and then composed into high-level tools.
+Verified live on **Houdini 21.0.631**.
 
----
+## Architecture
 
-## 🏗️ Architecture
+Imports flow downward only -- a lower layer never imports a higher one:
 
-The pipeline follows a strict, unidirectional layered dependency order. A lower layer must never import from a higher layer:
-
-```mermaid
-graph TD
-    Core[Core Layer] --> File[File Layer]
-    File --> Houdini[Houdini Layer]
-    Houdini --> Domain[Domain Layer]
-    Domain --> UI[UI Layer]
-    UI --> Interactive[Interactive Layer]
-    Interactive --> Tools[Tools Layer]
-    
-    style Core fill:#1f77b4,stroke:#fff,stroke-width:2px,color:#fff
-    style File fill:#aec7e8,stroke:#fff,stroke-width:2px,color:#000
-    style Houdini fill:#ff7f0e,stroke:#fff,stroke-width:2px,color:#fff
-    style Domain fill:#2ca02c,stroke:#fff,stroke-width:2px,color:#fff
-    style UI fill:#d62728,stroke:#fff,stroke-width:2px,color:#fff
-    style Interactive fill:#9467bd,stroke:#fff,stroke-width:2px,color:#fff
-    style Tools fill:#8c564b,stroke:#fff,stroke-width:2px,color:#fff
+```
+Core  ->  File  ->  Houdini  ->  Domain (materialx)  ->  UI  ->  Interactive  ->  Tools
 ```
 
-### Layer Breakdown
+| Layer        | Package                  | Rule                                   |
+|--------------|--------------------------|----------------------------------------|
+| Core         | `core/`                  | Pure Python -- zero `hou` imports      |
+| File         | `file/`                  | Pure Python -- no `hou`                |
+| Houdini      | `houdini/`               | All `hou` usage lives here (lazy)      |
+| Domain       | `materialx/`, `lookdev/` | May import `houdini/`                  |
+| UI           | `ui/`, `tools/*/ui.py`   | PySide2/PySide6 only here              |
+| Tools        | `tools/`                 | Compose all layers; entry points       |
 
-| Layer | Package | Constraints & Description |
-| :--- | :--- | :--- |
-| **Core** | `core/` | Pure Python utility functions. Zero `hou` imports. |
-| **File** | `file/` | Filesystem operations, texture parsing, and asset scanning. No `hou` imports. |
-| **Houdini** | `houdini/` | Houdini Object Model (HOM) wrappers. All `hou` usage lives here. |
-| **Domain** | `materialx/`, `lookdev/` | Domain-specific logic (e.g. MaterialX shader building). May import `houdini/`. |
-| **UI** | `ui/` | GUI components (PySide2/PySide6 only). |
-| **Interactive** | `interactive/` | Viewport states, custom drawables, and interactive HUD guides. |
-| **Tools** | `tools/` | High-level compositions and tool entry-points. |
+Each tool follows the same shape:
 
----
-
-## 📦 Package Layout
-
-```text
-lh_houdini_pipeline/
-├── core/
-│   ├── path.py           - Path template rendering and normalization
-│   ├── config.py         - Immutable configuration system with deep merging
-│   ├── logger.py         - Thread-safe contextual logging
-│   ├── executor.py       - Subprocess execution wrapper with retry policies
-│   ├── validators.py     - File validation helper stubs
-│   └── reload.py         - In-Houdini package hot-reloading
-├── file/
-│   ├── texture_parser.py - Texture info parser supporting UDIM and colorspaces
-│   ├── versioning.py     - Semantic version resolver for asset paths
-│   ├── scanner.py        - File discovery stubs
-│   └── cache_utils.py    - Frame-range and cache gap detectors
-├── houdini/              - HDA, parameter, USD/LOP, and animation helpers
-├── materialx/
-│   └── rules.py          - StandardSurface channel mappings and shader builders
-├── lookdev/              - Turntables, light rigs, and color calibration
-├── ui/                   - Custom PySide widgets and dialog layouts
-├── interactive/          - Custom viewer states and viewport handle setups
-└── tools/                - Modular tools: project manager, cam manager, asset builders
+```
+tools/<tool>/
+  core.py     # pure planning / data -- no hou, no Qt (unit-tested, dry-run)
+  service.py  # hou side-effects (lazy import); delegates plumbing to houdini.lop
+  ui.py       # PySide view; no business logic, calls core/service
+  launch.py   # shelf entry point
 ```
 
----
+## Install
 
-## 🚀 Getting Started
+The package root must be on Houdini's `PYTHONPATH`. Pick one:
 
-### Prerequisites
+**A. Houdini package file** (recommended) -- create
+`$HOUDINI_USER_PREF_DIR/packages/lh_pipeline.json`:
 
-* Python 3.7+
-* Houdini 19.5+ (for layers starting from the `houdini` layer onwards)
-
-### Installation
-
-Clone the repository and add it to your python path or Houdini environment:
-
-```bash
-git clone https://github.com/Omario92/LH-Houdini-Pipeline.git
+```json
+{
+    "env": [
+        { "PYTHONPATH": "E:/OneDrive/Documents/Claude/Projects/LH Houdini Pipeline" }
+    ]
+}
 ```
 
-Set the python path:
-
-```bash
-# Windows
-set PYTHONPATH=%PYTHONPATH%;C:\path\to\LH-Houdini-Pipeline
-
-# Linux/macOS
-export PYTHONPATH=$PYTHONPATH:/path/to/LH-Houdini-Pipeline
-```
-
----
-
-## 🧪 Testing & Verification
-
-Ensure everything is working outside of Houdini by running the smoke test suite:
-
-```bash
-python test_smoke.py
-```
-
-Inside Houdini, you can hot-reload changes using the utility module:
+**B. Quick test** -- in the Houdini Python Shell:
 
 ```python
-from lh_houdini_pipeline.core.reload import reload_package
-reload_package(verbose=True)
+import sys
+sys.path.insert(0, r"E:/OneDrive/Documents/Claude/Projects/LH Houdini Pipeline")
+import lh_houdini_pipeline   # should import cleanly
 ```
 
----
+**Shelf:** the four tools ship as `scripts/lh_pipeline.shelf`. Copy it into
+`$HOUDINI_USER_PREF_DIR/toolbar/` (or import via the shelf dock's *New Shelf*
+menu) and restart Houdini. Each tool is also a one-line launch (below).
 
-## 📝 License
+## Tools
 
-Distributed under the MIT License. See `LICENSE` for more information.
+### 1. Tex -> Mtlx  (`tools.tex_to_mtlx`)
+
+Scan a texture folder, parse material / channel / UDIM / colorspace, and build
+MaterialX shader networks in `/stage` (Material Library LOP) or `/mat`.
+Supported channels: base color, roughness, metalness, normal, displacement.
+Includes a threaded **imaketx** `.tx`/`.rat` converter with a progress bar.
+
+```python
+from lh_houdini_pipeline.tools.tex_to_mtlx import launch
+launch()
+```
+
+Headless / scripted:
+
+```python
+from lh_houdini_pipeline.tools.tex_to_mtlx import scan_and_plan, build_plans, service
+sc = scan_and_plan(r"D:/tex/hero")          # pure; safe outside Houdini (dry-run)
+service.convert_textures_to_tx(sc.infos)     # imaketx -> .rat
+build_plans(list(sc.plans), force=True)      # MaterialX networks in /stage
+```
+
+### 2. LOPs Asset Builder  (`tools.lops_asset_builder`)
+
+Build a USD component asset in `/stage`:
+`componentgeometry -> componentmaterial -> componentoutput`, with a
+`materiallibrary` built from a texture folder (reuses Tex->Mtlx). Build runs on
+the main thread (hou node creation is not thread-safe); the slow **Save** step
+uses Houdini's background execution.
+
+```python
+from lh_houdini_pipeline.tools.lops_asset_builder import launch
+launch()
+```
+
+Scripted:
+
+```python
+from lh_houdini_pipeline.tools.lops_asset_builder import plan_asset, build_asset, save_asset
+plan = plan_asset("HeroProp", geo_path=r"D:/geo/hero.bgeo.sc",
+                  tex_folder=r"D:/tex/hero", output_dir=r"D:/usd")
+res = build_asset(plan)        # builds the graph
+save_asset(res)                # write USD to disk
+```
+
+### 3. Project Manager  (`tools.project_manager`)
+
+Scaffold a `project / assets / shots` directory tree from a template, list
+existing projects, resolve the next work-file version, and point Houdini's
+`$JOB` at the project. Directory work is pure Python (runs anywhere).
+
+```python
+from lh_houdini_pipeline.tools.project_manager import launch
+launch()
+```
+
+Scripted:
+
+```python
+from lh_houdini_pipeline.tools.project_manager import plan_project, create_project, set_houdini_job
+plan = plan_project(r"D:/jobs", "DarkStar", assets=["hero"], shots=["sh0010", "sh0020"])
+create_project(plan)                    # mkdir -p the whole tree (idempotent)
+set_houdini_job(plan.project_root)      # $JOB -> D:/jobs/DarkStar
+```
+
+### 4. Camera Manager  (`tools.camera_manager`)
+
+Create and list cameras in OBJ (`/obj` `cam`) or Solaris (`/stage` `camera`)
+from resolution presets, with the correct per-context parameter mapping
+(OBJ `focal/aperture/resx/resy` vs USD `focalLength/horizontalAperture/clippingRange`).
+
+```python
+from lh_houdini_pipeline.tools.camera_manager import launch
+launch()
+```
+
+Scripted:
+
+```python
+from lh_houdini_pipeline.tools.camera_manager import (
+    spec_from_preset, ResolutionPreset, CameraContext, create_camera)
+spec = spec_from_preset("shotCam", ResolutionPreset.UHD4K, focal_length=35.0)
+create_camera(spec, CameraContext.OBJ)      # or CameraContext.STAGE for USD
+```
+
+## Component bricks (reusable)
+
+| Brick                          | Purpose                                                        |
+|--------------------------------|----------------------------------------------------------------|
+| `core.path`                    | `PathTemplate`, `PathResolver`, `normalize`, `ensure_dir`      |
+| `core.config`                  | Immutable `Config`, `ConfigManager`, `ConfigLoader`            |
+| `core.logger`                  | `get_logger`, `LogContext`, `setup_pipeline_logging`           |
+| `core.executor`                | `Executor` (list-args, never a shell string), `CommandResult`  |
+| `file.texture_parser`          | Filename -> `TextureInfo` (channel / UDIM / colorspace)        |
+| `file.versioning`              | `Version`, `VersionedFile`, `VersionResolver`                  |
+| `houdini.lop`                  | Generic node plumbing: create / connect / set parms / multiparm / layout |
+| `materialx.rules`              | Channel -> MaterialX input / colorspace rules                  |
+| `materialx.builder`            | `MaterialPlanner` (pure) + `MtlxNetworkBuilder` (hou)          |
+| `materialx.connection`         | Named-input wiring helpers for VOP networks                    |
+| `materialx.tx`                 | `imaketx` planner + converter over `core.executor`             |
+
+## Testing
+
+Pure layers and tool planning run with plain `python` (no Houdini):
+
+```
+cd "E:/OneDrive/Documents/Claude/Projects/LH Houdini Pipeline"
+python test_smoke.py                 # core + file (30 assertions)
+python test_tex_to_mtlx.py           # parser + plan + (guarded) build
+python test_materialx_tx.py          # imaketx planner / converter
+python test_lops_asset_builder.py    # asset planning
+python test_project_manager.py       # planning + real directory creation
+python test_camera_manager.py        # camera spec / parm mapping
+```
+
+Houdini-only behaviour (node creation, parm values, `$JOB`, PySide) is verified
+inside a live session; `scripts/verify_mtlx_nodes.py` is a standalone `hython`
+checker for the MaterialX node-type assumptions.
+
+## Conventions
+
+- `from __future__ import annotations` in every module; type-hint all signatures.
+- Frozen dataclasses for value objects; enums for fixed sets.
+- Public functions/classes carry docstrings (Args / Returns / Raises).
+- Defensive Houdini wrappers: log-and-continue on a missing parm/node rather
+  than crashing a half-built network; isolate uncertain node-type / parm names
+  so a version change is a one-line edit.
+- No `str.format(` and no shell-string subprocess calls (security-hook clean).
+
+See `CLAUDE.md` for the full architecture rules, key design decisions, and the
+verified-on-21.0.631 notes.

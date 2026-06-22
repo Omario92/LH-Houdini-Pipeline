@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LH Houdini Pipeline shelf.
+  Install: in Houdini, right-click the shelf dock -> New Shelf... or
+  copy this file into  $HOUDINI_USER_PREF_DIR/toolbar/  and restart Houdini.
+  Requires the package root on PYTHONPATH (see README.md "Install").
+-->
+<shelfDocument>
+  <toolshelf name="lh_pipeline" label="LH Pipeline">
+    <memberTool name="lh_tex_to_mtlx"/>
+    <memberTool name="lh_lops_asset_builder"/>
+    <memberTool name="lh_project_manager"/>
+    <memberTool name="lh_camera_manager"/>
+  </toolshelf>
+
+  <tool name="lh_tex_to_mtlx" label="Tex-&gt;Mtlx" icon="SHELF_material">
+    <helpText><![CDATA[Scan a texture folder and build MaterialX networks (+ imaketx .tx).]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.tex_to_mtlx import launch
+launch()
+]]></script>
+  </tool>
+
+  <tool name="lh_lops_asset_builder" label="Asset Builder" icon="SHELF_usd">
+    <helpText><![CDATA[Build a USD component asset (geometry + materials + output) in /stage.]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.lops_asset_builder import launch
+launch()
+]]></script>
+  </tool>
+
+  <tool name="lh_project_manager" label="Project Mgr" icon="SHELF_folder">
+    <helpText><![CDATA[Scaffold a project / asset / shot directory tree and set $JOB.]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.project_manager import launch
+launch()
+]]></script>
+  </tool>
+
+  <tool name="lh_camera_manager" label="Camera Mgr" icon="SHELF_camera">
+    <helpText><![CDATA[Create and list OBJ cameras and Solaris USD cameras from presets.]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.camera_manager import launch
+launch()
+]]></script>
+  </tool>
+</shelfDocument>
