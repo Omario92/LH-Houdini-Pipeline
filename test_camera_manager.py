@@ -99,6 +99,21 @@ def _turntable_angles():
     assert tt.frame_numbers()[0]==1 and tt.frame_numbers()[-1]==120
 check("turntable: angle_at sweeps 0..360", _turntable_angles)
 
+def _turntable_orbit_math():
+    from lh_houdini_pipeline.tools.camera_manager import turntable_transforms, TurntableSpec
+    import math
+    tt = TurntableSpec(total_frames=120, start_frame=1, pitch_deg=20.0)
+    keys = turntable_transforms(tt, center=(0.0,0.0,0.0), radius=10.0)
+    assert len(keys)==120, len(keys)
+    k0 = keys[0]
+    # frame 0: angle 0 -> at +Z, ry 0, rx -pitch, height = 10*tan(20)
+    assert k0.frame==1 and abs(k0.tx-0.0)<1e-6 and abs(k0.tz-10.0)<1e-6, k0
+    assert abs(k0.ry-0.0)<1e-6 and abs(k0.rx+20.0)<1e-6
+    assert abs(k0.ty - 10.0*math.tan(math.radians(20.0))) < 1e-6
+    k30 = keys[30]   # angle 90 -> at +X, ry 90, tz ~ 0
+    assert abs(k30.ry-90.0)<1e-6 and abs(k30.tx-10.0)<1e-6 and abs(k30.tz-0.0)<1e-6, k30
+check("turntable: orbit transform math (pos/ry/pitch)", _turntable_orbit_math)
+
 
 print("\n=== summary ===")
 if errors:

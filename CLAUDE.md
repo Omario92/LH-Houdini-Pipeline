@@ -238,3 +238,6 @@ Khi viết code Houdini-specific:
 | 2026-06-22 | camera_manager: pure plan_merge (sequential offsets) + service merge_cameras with static-interpolation fix (Week08) |
 | 2026-06-22 | camera_manager UI: Delete/Sync/Merge buttons; added TurntableSpec (pure) for next slice |
 | 2026-06-22 | VERIFIED live H21.0.631: merge tx offsets + focal hold-keys (no drift @1005=50/@1012=85); delete/sync OK; UI handlers OK |
+| 2026-06-22 | camera_manager: pure turntable_transforms (360 orbit math) + service create_turntable (camera LOP, keyframed transform -> USD time-dependent) |
+| 2026-06-22 | camera_manager UI: Turntable(USD) button; optional bounds-from-/stage-target (UsdGeom.BBoxCache) |
+| 2026-06-22 | VERIFIED live H21.0.631: turntable ry 0->357 over 120f, orbit f1=+Z f31=+X, focal35/ap10x10; pure orbit-math test green |

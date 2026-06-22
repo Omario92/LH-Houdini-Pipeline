@@ -12,9 +12,10 @@ and keeps the ``service`` layer a thin node-creation shell.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class CameraContext(Enum):
@@ -289,3 +290,55 @@ class TurntableSpec:
     def frame_numbers(self) -> List[int]:
         """The absolute frame numbers the turntable spans."""
         return list(range(self.start_frame, self.start_frame + self.total_frames))
+
+
+@dataclass(frozen=True)
+class TurntableKey:
+    """One frame of a turntable orbit: a camera translate + rotate sample."""
+    frame: int
+    tx: float
+    ty: float
+    tz: float
+    rx: float
+    ry: float
+    rz: float
+
+
+def turntable_transforms(
+    spec: TurntableSpec,
+    center: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    radius: float = 10.0,
+) -> List[TurntableKey]:
+    """Compute the per-frame orbit transform for a turntable camera (pure).
+
+    The camera orbits *center* on a circle of *radius* in the XZ plane, raised
+    by ``radius * tan(pitch)`` and pitched down by ``spec.pitch_deg`` so it
+    always frames the asset.  A Houdini/USD camera looks down its local -Z, so
+    ``ry`` equals the spin angle (camera faces inward) and ``rx`` is the
+    constant downward pitch.
+
+    Args:
+        spec:   The :class:`TurntableSpec` (frame count, pitch, etc.).
+        center: World-space point to orbit.
+        radius: Orbit radius.
+
+    Returns:
+        One :class:`TurntableKey` per turntable frame.
+    """
+    cx, cy, cz = center
+    pitch = spec.pitch_deg
+    height = radius * math.tan(math.radians(pitch))
+    keys: List[TurntableKey] = []
+    for i, frame in enumerate(spec.frame_numbers()):
+        angle = spec.angle_at(i)
+        a = math.radians(angle)
+        keys.append(TurntableKey(
+            frame=frame,
+            tx=cx + radius * math.sin(a),
+            ty=cy + height,
+            tz=cz + radius * math.cos(a),
+            rx=-pitch,
+            ry=angle,
+            rz=0.0,
+        ))
+    return keys

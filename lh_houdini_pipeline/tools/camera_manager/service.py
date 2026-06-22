@@ -27,7 +27,9 @@ from lh_houdini_pipeline.tools.camera_manager.core import (
     CameraSpec,
     CameraTiming,
     MergePlan,
+    TurntableSpec,
     plan_merge,
+    turntable_transforms,
 )
 
 _log = get_logger(__name__)
@@ -284,9 +286,112 @@ def merge_cameras(
     return merged.path()
 
 
+def create_turntable(
+    spec: Optional[TurntableSpec] = None,
+    center: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    radius: float = 10.0,
+    parent_path: str = "/stage",
+    target_path: Optional[str] = None,
+    name: Optional[str] = None,
+) -> Optional[str]:
+    """Create a 360-degree turntable camera in /stage (Week 10).
+
+    Builds a Solaris ``camera`` LOP and keyframes its transform to orbit the
+    asset; Houdini authors these as USD xform time-samples (one sample per
+    ``Usd.TimeCode``), giving a USD-native turntable.  When *target_path* is a
+    LOP node, the orbit *center* and *radius* are derived from that stage's
+    world bounds; otherwise the explicit *center* / *radius* are used.
+
+    Args:
+        spec:        Turntable parameters; defaults to :class:`TurntableSpec`.
+        center:      Orbit center (used when no *target_path*).
+        radius:      Orbit radius (used when no *target_path*).
+        parent_path: LOP network to build in (``/stage``).
+        target_path: Optional LOP node to frame (derives center + radius).
+        name:        Camera node name; defaults to ``spec.name``.
+
+    Returns:
+        The turntable camera node path, or ``None`` on failure.
+    """
+    import hou  # noqa: PLC0415
+
+    spec = spec or TurntableSpec()
+    parent = _lop.get_node(parent_path)
+    if parent is None:
+        _log.error("create_turntable: parent not found: " + parent_path)
+        return None
+
+    if target_path:
+        derived = _bounds_center_radius(target_path)
+        if derived is not None:
+            center, radius = derived
+            _log.info("Turntable framed to " + target_path
+                      + " center=" + str(center) + " radius=" + str(round(radius, 2)))
+
+    cam = _lop.create_node(parent, "camera", name or spec.name, force=True)
+    if cam is None:
+        return None
+    _lop.set_parms(cam, {
+        "focalLength": spec.focal_length,
+        "horizontalAperture": spec.aperture,
+        "verticalAperture": spec.aperture,
+    })
+
+    keys = turntable_transforms(spec, center=center, radius=radius)
+    with hou.undos.group("Create turntable " + cam.name()):
+        for key in keys:
+            for pname, value in (
+                ("tx", key.tx), ("ty", key.ty), ("tz", key.tz),
+                ("rx", key.rx), ("ry", key.ry), ("rz", key.rz),
+            ):
+                parm = cam.parm(pname)
+                if parm is not None:
+                    kf = hou.Keyframe()
+                    kf.setFrame(key.frame)
+                    kf.setValue(value)
+                    parm.setKeyframe(kf)
+
+    frames = spec.frame_numbers()
+    if frames:
+        hou.playbar.setFrameRange(frames[0], frames[-1])
+        hou.playbar.setPlaybackRange(frames[0], frames[-1])
+        hou.setFrame(frames[0])
+    _lop.layout(parent)
+    _log.info("Created turntable " + cam.path() + " (" + str(len(keys)) + " frames)")
+    return cam.path()
+
+
 # ---------------------------------------------------------------------------
 # Internal
 # ---------------------------------------------------------------------------
+
+def _bounds_center_radius(target_path: str):
+    """Best-effort orbit center + radius from a LOP node's world bounds.
+
+    Returns ``(center, radius)`` or ``None`` if it cannot be computed (the
+    caller then falls back to explicit values).
+    """
+    node = _lop.get_node(target_path)
+    if node is None or not hasattr(node, "stage"):
+        return None
+    try:
+        from pxr import Usd, UsdGeom  # noqa: PLC0415
+        stage = node.stage()
+        prim = stage.GetDefaultPrim() or stage.GetPseudoRoot()
+        cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            [UsdGeom.Tokens.default_, UsdGeom.Tokens.render],
+        )
+        rng = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+        mn, mx = rng.GetMin(), rng.GetMax()
+        center = ((mn[0] + mx[0]) / 2.0, (mn[1] + mx[1]) / 2.0, (mn[2] + mx[2]) / 2.0)
+        max_dim = max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2])
+        radius = max_dim * 2.5 if max_dim > 0 else 10.0
+        return center, radius
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("create_turntable: bounds compute failed (" + str(exc) + ")")
+        return None
+
 
 def _set_hold_key(parm: Any, frame: int, value: float) -> None:
     """Insert a constant (hold) keyframe at *frame* with *value*."""

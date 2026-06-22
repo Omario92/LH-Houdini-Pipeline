@@ -89,9 +89,13 @@ class CameraManagerWidget(QtWidgets.QWidget):
         self._sync_btn.clicked.connect(self._on_sync)
         self._merge_btn = QtWidgets.QPushButton("Merge All (OBJ)")
         self._merge_btn.clicked.connect(self._on_merge)
+        self._turntable_btn = QtWidgets.QPushButton("Turntable (USD)")
+        self._turntable_btn.setToolTip("Create a 360 turntable camera in /stage.")
+        self._turntable_btn.clicked.connect(self._on_turntable)
         ops_row.addWidget(self._delete_btn)
         ops_row.addWidget(self._sync_btn)
         ops_row.addWidget(self._merge_btn)
+        ops_row.addWidget(self._turntable_btn)
         layout.addLayout(ops_row)
 
         self._status = QtWidgets.QLabel("Ready.")
@@ -192,6 +196,30 @@ class CameraManagerWidget(QtWidgets.QWidget):
             self._set_status("Merged " + str(len(cams)) + " cameras -> " + path)
         else:
             self._set_status("Merge failed (see log).", error=True)
+
+    def _on_turntable(self) -> None:
+        """Create a USD turntable camera in /stage from the form's focal/fstop."""
+        spec = _core.TurntableSpec(focal_length=self._focal_spin.value())
+        target = None
+        # if a /stage camera/prim source is selected in this list, frame to it
+        sel = self._selected_paths()
+        if sel and sel[0].startswith("/stage"):
+            target = sel[0]
+        try:
+            path = _service.create_turntable(spec, target_path=target)
+        except Exception as exc:  # noqa: BLE001
+            self._set_status("Turntable failed: " + str(exc), error=True)
+            _log.exception("turntable failed")
+            return
+        if path:
+            # switch context to STAGE so the new camera shows in the list
+            idx = self._context_cb.findData(_core.CameraContext.STAGE)
+            if idx >= 0:
+                self._context_cb.setCurrentIndex(idx)
+            self._refresh()
+            self._set_status("Created turntable: " + path)
+        else:
+            self._set_status("Turntable creation failed (see log).", error=True)
 
     def _set_status(self, message: str, error: bool = False) -> None:
         """Update the status label (red on error)."""
