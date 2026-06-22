@@ -241,3 +241,5 @@ Khi viết code Houdini-specific:
 | 2026-06-22 | camera_manager: pure turntable_transforms (360 orbit math) + service create_turntable (camera LOP, keyframed transform -> USD time-dependent) |
 | 2026-06-22 | camera_manager UI: Turntable(USD) button; optional bounds-from-/stage-target (UsdGeom.BBoxCache) |
 | 2026-06-22 | VERIFIED live H21.0.631: turntable ry 0->357 over 120f, orbit f1=+Z f31=+X, focal35/ap10x10; pure orbit-math test green |
+| 2026-06-22 | Added Camera Export feature (USD, Alembic, Nuke .nk) and USD baking to the Camera Manager |
+| 2026-06-22 | Implemented USD Camera Variants (focal length and transform VariantSets) with stacked python LOP architecture, resolving LIVRPS override issues |

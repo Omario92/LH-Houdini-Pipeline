@@ -444,3 +444,40 @@ def write_nuke_camera_script(name: str, frames: List[CameraFrameData], output_pa
     except Exception:
         return False
 
+
+# ---------------------------------------------------------------------------
+# USD Camera Variants
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CameraVariantSpec:
+    """Description of a single camera variant (e.g. particular lens/angle).
+
+    Attributes:
+        name:         Variant name (e.g. 'wide_35mm' or 'front_angle').
+        focal_length: Focal length in millimetres.
+        tx, ty, tz:   Optional transform position overrides.
+        rx, ry, rz:   Optional transform rotation (Euler XYZ) overrides.
+    """
+    name:         str
+    focal_length: float
+    tx:           Optional[float] = None
+    ty:           Optional[float] = None
+    tz:           Optional[float] = None
+    rx:           Optional[float] = None
+    ry:           Optional[float] = None
+    rz:           Optional[float] = None
+
+
+@dataclass(frozen=True)
+class VariantSetSpec:
+    """Description of a USD VariantSet containing several camera variants.
+
+    Attributes:
+        name:     VariantSet name (e.g. 'lens' or 'angle').
+        variants: Collection of variants.
+    """
+    name:     str
+    variants: Tuple[CameraVariantSpec, ...]
+
+

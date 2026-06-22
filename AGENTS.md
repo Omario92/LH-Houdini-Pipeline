@@ -11,6 +11,7 @@
 ## Recent Changes
 - Created README.md and initialized Git repository to push code to GitHub.
 - Added Camera Export feature (USD, Alembic, Nuke .nk) and USD baking to the Camera Manager.
+- Added USD Camera Variants feature (VariantSets for focal lengths and angle transforms) to the Camera Manager.
 ---
 
 ## Houdini Reference & Rules

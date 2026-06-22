@@ -29,6 +29,8 @@ from lh_houdini_pipeline.tools.camera_manager.core import (
     MergePlan,
     TurntableSpec,
     CameraFrameData,
+    CameraVariantSpec,
+    VariantSetSpec,
     plan_merge,
     turntable_transforms,
     write_nuke_camera_script,
@@ -751,4 +753,140 @@ def export_camera(
             _log.error("Failed to export camera to Alembic: " + abc_path)
 
     return results
+
+
+def create_camera_variants(
+    camera_path: str,
+    variant_set_name: str,
+    variants: List[CameraVariantSpec],
+) -> bool:
+    """Create USD VariantSets (e.g. lens, angle) on a STAGE camera node.
+
+    This adds a 'python' LOP node downstream of the camera LOP node to author
+    the VariantSet natively in the USD stage, surviving recooks.
+
+    Args:
+        camera_path:      Path to the STAGE camera LOP node.
+        variant_set_name: Name of the VariantSet (e.g. 'lens', 'angle').
+        variants:         List of CameraVariantSpec.
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    import hou  # noqa: PLC0415
+    node = _lop.get_node(camera_path)
+    if node is None:
+        _log.error("create_camera_variants: Node not found: " + camera_path)
+        return False
+
+    if node.type().name() != "camera":
+        _log.error("create_camera_variants: Node must be a STAGE 'camera' LOP, got: " + node.type().name())
+        return False
+
+    parent = node.parent()
+    prim_path = node.parm("primpath").eval() if node.parm("primpath") else "/" + node.name()
+
+    # Find the end of the variant chain and see if our specific node exists
+    node_name = f"variants_{node.name()}_{variant_set_name}"
+    python_lop = None
+    last_node = node
+    
+    # Traverse the chain of "variants_*" nodes downstream
+    curr = node
+    while True:
+        next_node = None
+        for conn in curr.outputConnections():
+            out_node = conn.outputNode()
+            if out_node.type().name() == "pythonscript" and out_node.name().startswith("variants_" + node.name()):
+                if out_node.name() == node_name:
+                    python_lop = out_node
+                next_node = out_node
+                break
+        if next_node is None:
+            break
+        curr = next_node
+        
+    last_node = curr
+
+    if python_lop is None:
+        # Create a new python LOP node
+        python_lop = _lop.create_node(parent, "pythonscript", node_name, force=True)
+        if python_lop is None:
+            return False
+        
+        # Wire it: last_node -> python_lop
+        _lop.connect(python_lop, last_node, input_index=0, output_index=0)
+        
+        # Set flags
+        python_lop.setDisplayFlag(True)
+        
+        # Layout
+        _lop.layout(parent)
+
+    # Format the variants data dictionary for python string code
+    variants_dict = {}
+    for var in variants:
+        has_xform = var.tx is not None or var.rx is not None
+        variants_dict[var.name] = {
+            "focal_length": var.focal_length,
+            "has_transform": has_xform,
+            "tx": var.tx or 0.0,
+            "ty": var.ty or 0.0,
+            "tz": var.tz or 0.0,
+            "rx": var.rx or 0.0,
+            "ry": var.ry or 0.0,
+            "rz": var.rz or 0.0,
+        }
+
+    # Build python code to set on the python LOP node
+    code_tmpl = (
+        "from pxr import Usd, UsdGeom, Gf\n\n"
+        "node = hou.pwd()\n"
+        "stage = node.editableStage()\n"
+        "stage.OverridePrim('__PRIM_PATH__')\n"
+        "prim = stage.GetPrimAtPath('__PRIM_PATH__')\n"
+        "if prim.IsValid():\n"
+        "    if prim.HasAttribute('focalLength'):\n"
+        "        prim.GetAttribute('focalLength').Clear()\n"
+        "    variants_data = __VARIANTS_DATA__\n"
+        "    has_any_transform = any(spec['has_transform'] for spec in variants_data.values())\n"
+        "    if has_any_transform:\n"
+        "        for op_name in ['xformOp:translate', 'xformOp:rotateXYZ', 'xformOpOrder']:\n"
+        "            if prim.HasAttribute(op_name):\n"
+        "                prim.GetAttribute(op_name).Clear()\n"
+        "    vsets = prim.GetVariantSets()\n"
+        "    vset = vsets.AddVariantSet('__VSET_NAME__')\n"
+        "    for var_name, spec in variants_data.items():\n"
+        "        vset.AddVariant(var_name)\n"
+        "        vset.SetVariantSelection(var_name)\n"
+        "        with vset.GetVariantEditContext():\n"
+        "            cam_prim = stage.GetPrimAtPath('__PRIM_PATH__')\n"
+        "            UsdGeom.Camera(cam_prim).GetFocalLengthAttr().Set(spec['focal_length'] / 100.0)\n"
+        "            if spec['has_transform']:\n"
+        "                xformable = UsdGeom.Xformable(cam_prim)\n"
+        "                translate_op = xformable.GetXformOp(UsdGeom.XformOp.TypeTranslate)\n"
+        "                if not translate_op:\n"
+        "                    translate_op = xformable.AddTranslateOp()\n"
+        "                translate_op.Set(Gf.Vec3d(spec['tx'], spec['ty'], spec['tz']))\n\n"
+        "                rotate_op = xformable.GetXformOp(UsdGeom.XformOp.TypeRotateXYZ)\n"
+        "                if not rotate_op:\n"
+        "                    rotate_op = xformable.AddRotateXYZOp()\n"
+        "                rotate_op.Set(Gf.Vec3d(spec['rx'], spec['ry'], spec['rz']))\n"
+    )
+
+    code = (
+        code_tmpl
+        .replace("__PRIM_PATH__", prim_path)
+        .replace("__VSET_NAME__", variant_set_name)
+        .replace("__VARIANTS_DATA__", repr(variants_dict))
+    )
+
+    # Set parameter
+    python_lop.parm("python").set(code)
+    
+    # Cook it to apply changes
+    python_lop.cook(force=True)
+    _log.info("Created/updated VariantSet '" + variant_set_name + "' on camera " + camera_path)
+    return True
+
 

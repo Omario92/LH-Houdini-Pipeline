@@ -95,11 +95,15 @@ class CameraManagerWidget(QtWidgets.QWidget):
         self._export_btn = QtWidgets.QPushButton("Export Selected...")
         self._export_btn.setToolTip("Export the selected camera to USD, Alembic, or Nuke format.")
         self._export_btn.clicked.connect(self._on_export)
+        self._variants_btn = QtWidgets.QPushButton("Add Variants...")
+        self._variants_btn.setToolTip("Add focal length or angle VariantSets to a selected LOP camera.")
+        self._variants_btn.clicked.connect(self._on_variants)
         ops_row.addWidget(self._delete_btn)
         ops_row.addWidget(self._sync_btn)
         ops_row.addWidget(self._merge_btn)
         ops_row.addWidget(self._turntable_btn)
         ops_row.addWidget(self._export_btn)
+        ops_row.addWidget(self._variants_btn)
         layout.addLayout(ops_row)
 
         self._status = QtWidgets.QLabel("Ready.")
@@ -270,6 +274,36 @@ class CameraManagerWidget(QtWidgets.QWidget):
                 self._set_status("Export failed: " + str(exc), error=True)
                 _log.exception("Camera export failed")
 
+    def _on_variants(self) -> None:
+        """Create camera VariantSets on the selected LOP camera."""
+        paths = self._selected_paths()
+        if not paths:
+            self._set_status("Select a stage camera to add variants to.", error=True)
+            return
+        
+        camera_path = paths[0]
+        if not camera_path.startswith("/stage"):
+            self._set_status("Variants require a STAGE (USD) camera node.", error=True)
+            return
+            
+        dialog = CameraVariantsDialog(camera_path, self)
+        exec_func = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
+        if exec_func() == QtWidgets.QDialog.Accepted:
+            vset_name, variants = dialog.get_variants()
+            if not variants:
+                self._set_status("No variants selected.", error=True)
+                return
+            
+            try:
+                ok = _service.create_camera_variants(camera_path, vset_name, variants)
+                if ok:
+                    self._set_status("Added VariantSet '" + vset_name + "' to " + camera_path)
+                else:
+                    self._set_status("Failed to create variants (see log).", error=True)
+            except Exception as exc:  # noqa: BLE001
+                self._set_status("Failed: " + str(exc), error=True)
+                _log.exception("Camera variants creation failed")
+
     def _set_status(self, message: str, error: bool = False) -> None:
         """Update the status label (red on error)."""
         self._status.setStyleSheet("color: #cc5555;" if error else "")
@@ -376,6 +410,102 @@ class CameraExportDialog(QtWidgets.QDialog):
             "start_frame": self._start_spin.value(),
             "end_frame": self._end_spin.value(),
         }
+
+
+class CameraVariantsDialog(QtWidgets.QDialog):
+    """Dialog to configure camera VariantSet."""
+    
+    def __init__(self, camera_path: str, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Add Camera Variants")
+        self.camera_path = camera_path
+        
+        layout = QtWidgets.QVBoxLayout(self)
+        form = QtWidgets.QFormLayout()
+        
+        self._vset_type = QtWidgets.QComboBox()
+        self._vset_type.addItem("Lens (Focal Lengths)", "lens")
+        self._vset_type.addItem("Angle (Transforms)", "angle")
+        self._vset_type.currentIndexChanged.connect(self._on_type_changed)
+        form.addRow("VariantSet Type:", self._vset_type)
+        
+        self._vset_name = QtWidgets.QLineEdit("lens")
+        form.addRow("VariantSet Name:", self._vset_name)
+        
+        self._lens_group = QtWidgets.QWidget()
+        lens_layout = QtWidgets.QVBoxLayout(self._lens_group)
+        lens_layout.setContentsMargins(0, 0, 0, 0)
+        self._wide_cb = QtWidgets.QCheckBox("Wide (24mm)")
+        self._wide_cb.setChecked(True)
+        self._medium_cb = QtWidgets.QCheckBox("Medium (50mm)")
+        self._medium_cb.setChecked(True)
+        self._tight_cb = QtWidgets.QCheckBox("Tight (85mm)")
+        self._tight_cb.setChecked(True)
+        lens_layout.addWidget(self._wide_cb)
+        lens_layout.addWidget(self._medium_cb)
+        lens_layout.addWidget(self._tight_cb)
+        form.addRow("Select Lenses:", self._lens_group)
+        
+        self._angle_group = QtWidgets.QWidget()
+        angle_layout = QtWidgets.QVBoxLayout(self._angle_group)
+        angle_layout.setContentsMargins(0, 0, 0, 0)
+        self._front_cb = QtWidgets.QCheckBox("Front (tx=0, tz=10, ry=0)")
+        self._front_cb.setChecked(True)
+        self._side_cb = QtWidgets.QCheckBox("Side (tx=10, tz=0, ry=90)")
+        self._side_cb.setChecked(True)
+        self._three_quarter_cb = QtWidgets.QCheckBox("3/4 View (tx=7.07, tz=7.07, ry=45)")
+        self._three_quarter_cb.setChecked(True)
+        self._top_cb = QtWidgets.QCheckBox("Top View (ty=10, rx=-90)")
+        self._top_cb.setChecked(True)
+        angle_layout.addWidget(self._front_cb)
+        angle_layout.addWidget(self._side_cb)
+        angle_layout.addWidget(self._three_quarter_cb)
+        angle_layout.addWidget(self._top_cb)
+        form.addRow("Select Angles:", self._angle_group)
+        
+        self._angle_group.setVisible(False)
+        layout.addLayout(form)
+        
+        # Buttons
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            QtCore.Qt.Horizontal, self
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+        self.resize(380, 250)
+        
+    def _on_type_changed(self) -> None:
+        is_lens = self._vset_type.currentData() == "lens"
+        self._vset_name.setText("lens" if is_lens else "angle")
+        self._lens_group.setVisible(is_lens)
+        self._angle_group.setVisible(not is_lens)
+        
+    def get_variants(self) -> Tuple[str, list]:
+        vset_name = self._vset_name.text().strip() or "variants"
+        vtype = self._vset_type.currentData()
+        variants = []
+        
+        if vtype == "lens":
+            if self._wide_cb.isChecked():
+                variants.append(_core.CameraVariantSpec("wide_24mm", 24.0))
+            if self._medium_cb.isChecked():
+                variants.append(_core.CameraVariantSpec("medium_50mm", 50.0))
+            if self._tight_cb.isChecked():
+                variants.append(_core.CameraVariantSpec("tight_85mm", 85.0))
+        else:
+            # Angles
+            if self._front_cb.isChecked():
+                variants.append(_core.CameraVariantSpec("front", 50.0, tx=0.0, ty=0.0, tz=10.0, rx=0.0, ry=0.0, rz=0.0))
+            if self._side_cb.isChecked():
+                variants.append(_core.CameraVariantSpec("side", 50.0, tx=10.0, ty=0.0, tz=0.0, rx=0.0, ry=90.0, rz=0.0))
+            if self._three_quarter_cb.isChecked():
+                variants.append(_core.CameraVariantSpec("three_quarter", 50.0, tx=7.07, ty=0.0, tz=7.07, rx=0.0, ry=45.0, rz=0.0))
+            if self._top_cb.isChecked():
+                variants.append(_core.CameraVariantSpec("top", 50.0, tx=0.0, ty=10.0, tz=0.0, rx=-90.0, ry=0.0, rz=0.0))
+                
+        return vset_name, variants
 
 
 def launch(parent: Optional[object] = None) -> "CameraManagerWidget":

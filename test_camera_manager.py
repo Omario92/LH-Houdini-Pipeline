@@ -157,8 +157,54 @@ def _nuke_camera_writer():
         assert "rot_order XYZ" in content
 check("write_nuke_camera_script output", _nuke_camera_writer)
 
+print("\n=== camera variants ===")
+def _camera_variants():
+    from lh_houdini_pipeline.tools.camera_manager import CameraVariantSpec, VariantSetSpec
+    v1 = CameraVariantSpec("wide", 24.0)
+    v2 = CameraVariantSpec("front", 50.0, tx=0.0, ty=0.0, tz=10.0)
+    vset = VariantSetSpec("lens", (v1, v2))
+    assert vset.name == "lens"
+    assert len(vset.variants) == 2
+    assert vset.variants[0].focal_length == 24.0
+    assert vset.variants[1].tz == 10.0
+check("CameraVariantSpec & VariantSetSpec structure", _camera_variants)
+
+try:
+    import hou
+    _HAS_HOU = True
+except ImportError:
+    _HAS_HOU = False
+
+if _HAS_HOU:
+    def _stage_variants():
+        import hou
+        from lh_houdini_pipeline.tools.camera_manager import service, CameraSpec, CameraContext, CameraVariantSpec
+        
+        # Clear/Create temp test camera
+        spec = CameraSpec(name="test_var_cam", focal_length=50.0)
+        cam_path = service.create_camera(spec, context=CameraContext.STAGE, force=True)
+        assert cam_path == "/stage/test_var_cam"
+        
+        # Create variants
+        variants = [
+            CameraVariantSpec("wide", 24.0),
+            CameraVariantSpec("medium", 50.0),
+        ]
+        ok = service.create_camera_variants(cam_path, "lens", variants)
+        assert ok
+        
+        # Verify node existence
+        python_lop = hou.node("/stage/variants_test_var_cam_lens")
+        assert python_lop is not None
+        
+        # Clean up
+        hou.node(cam_path).destroy()
+        python_lop.destroy()
+    check("create stage variants (lens)", _stage_variants)
+
 
 print("\n=== summary ===")
 if errors:
     print("  "+str(len(errors))+" FAILED"); [print("    - "+l+": "+str(e)) for l,e in errors]; sys.exit(1)
 print("  All camera_manager assertions passed."); sys.exit(0)
+
