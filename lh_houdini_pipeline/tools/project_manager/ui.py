@@ -42,10 +42,11 @@ _STYLESHEET = """
 QWidget#pmRoot { background: #2b2b2b; }
 QGroupBox {
     background: #323232; border: 1px solid #3c3c3c; border-radius: 8px;
-    margin-top: 14px; padding: 10px 12px 12px 12px;
+    margin-top: 26px; padding: 16px 12px 14px 12px;
 }
 QGroupBox::title {
-    subcontrol-origin: margin; left: 12px; padding: 2px 8px;
+    subcontrol-origin: margin; subcontrol-position: top left;
+    left: 14px; top: 2px; padding: 0 6px;
     color: #9aa6b2; font-weight: 600; text-transform: uppercase;
     letter-spacing: 1px; font-size: 11px;
 }
