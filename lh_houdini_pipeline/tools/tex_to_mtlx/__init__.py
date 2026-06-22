@@ -48,10 +48,17 @@ def build_plans(*args, **kwargs):
     return _bp(*args, **kwargs)
 
 
-def launch(*args, **kwargs):
-    """Lazy proxy to the UI launcher (imports PySide/``hou`` only when called).
+_WINDOW = None  # keep a reference so the window is not garbage-collected
 
-    See :func:`lh_houdini_pipeline.tools.tex_to_mtlx.launch.launch`.
+
+def launch(*args, **kwargs):
+    """Open the TexToMtlx window and return it (cached module-side).
+
+    Imports the ``ui`` submodule directly (never a ``launch`` submodule),
+    so the package attribute ``launch`` stays this function across repeated
+    calls -- importing a same-named submodule would otherwise shadow it.
     """
-    from lh_houdini_pipeline.tools.tex_to_mtlx.launch import launch as _launch
-    return _launch()
+    global _WINDOW
+    from lh_houdini_pipeline.tools.tex_to_mtlx import ui as _ui
+    _WINDOW = _ui.launch()
+    return _WINDOW

@@ -233,3 +233,4 @@ Khi viết code Houdini-specific:
 | 2026-06-21 | tools/camera_manager: pure CameraSpec.to_parms per OBJ/STAGE context + service create/list via houdini.lop |
 | 2026-06-21 | VERIFIED live H21.0.631: OBJ cam (focal/aperture/resx/resy) + USD camera (focalLength/clippingRange/vAperture derived) |
 | 2026-06-21 | Added test_camera_manager.py (8 pure assertions); ALL tools/ now DONE (tex_to_mtlx, lops_asset_builder, project_manager, camera_manager) |
+| 2026-06-22 | Bugfix: tool __init__.launch imported same-named '.launch' submodule, which shadowed the package 'launch' function after first call (-> 'module not callable' on 2nd open). Now imports ui directly; verified opening twice OK on all 4 tools |

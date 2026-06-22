@@ -45,7 +45,17 @@ __all__ = [
 ]
 
 
+_WINDOW = None  # keep a reference so the window is not garbage-collected
+
+
 def launch(*args, **kwargs):
-    """Lazy proxy to the UI launcher (imports PySide only when called)."""
-    from lh_houdini_pipeline.tools.camera_manager.launch import launch as _l
-    return _l()
+    """Open the Camera Manager window and return it (cached module-side).
+
+    Imports the ``ui`` submodule directly (never a ``launch`` submodule),
+    so the package attribute ``launch`` stays this function across repeated
+    calls -- importing a same-named submodule would otherwise shadow it.
+    """
+    global _WINDOW
+    from lh_houdini_pipeline.tools.camera_manager import ui as _ui
+    _WINDOW = _ui.launch()
+    return _WINDOW
