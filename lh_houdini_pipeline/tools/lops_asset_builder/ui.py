@@ -487,16 +487,6 @@ class LopsAssetBuilderWidget(QtWidgets.QWidget):
         proxy_quality = self._proxy_quality_cb.currentText()
         auto_tx = self._convert_tx_cb.isChecked()
 
-        try:
-            plan = _core.plan_asset(
-                name, geo_path=geo, tex_folder=tex, output_dir=out,
-                generate_proxy=sim_proxy, proxy_quality=proxy_quality
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._set_status(f"Planning failed: {exc}", error=True)
-            self._log_msg(f"ERROR: Planning failed: {exc}", "ERROR")
-            return
-
         # Check if texture conversion should run first
         if auto_tx and tex and os.path.isdir(tex):
             self._log_msg("Scanning texture folder for conversion...", "INFO")
@@ -513,7 +503,11 @@ class LopsAssetBuilderWidget(QtWidgets.QWidget):
                     
                     self._tx_worker = _TxWorker(scan_res.infos, out_dir=None, dry_run=False)
                     self._tx_worker.progress.connect(self._on_tx_progress)
-                    self._tx_worker.finished.connect(lambda ok, total: self._on_tx_finished(ok, total, plan, background))
+                    self._tx_worker.finished.connect(
+                        lambda ok, total: self._on_tx_finished(
+                            ok, total, name, geo, tex, out, sim_proxy, proxy_quality, background
+                        )
+                    )
                     self._tx_worker.failed.connect(self._on_tx_failed)
                     
                     self._tx_thread = threading.Thread(target=self._tx_worker.run, daemon=True)
@@ -525,15 +519,39 @@ class LopsAssetBuilderWidget(QtWidgets.QWidget):
                 self._log_msg(f"Texture scan failed: {exc}, proceeding directly to build.", "WARNING")
 
         # Fallthrough directly to HDA build
+        try:
+            plan = self._make_plan(name, geo, tex, out, sim_proxy, proxy_quality)
+        except Exception as exc:  # noqa: BLE001
+            self._set_status(f"Planning failed: {exc}", error=True)
+            self._log_msg(f"ERROR: Planning failed: {exc}", "ERROR")
+            return
         self._execute_build(plan, background)
 
     def _on_tx_progress(self, done: int, total: int, name: str) -> None:
         self._progress.setValue(done)
         self._set_status(f"Converting textures: {done}/{total} ({os.path.basename(name)})")
 
-    def _on_tx_finished(self, ok: int, total: int, plan: _core.AssetBuildPlan, background: bool) -> None:
+    def _on_tx_finished(
+        self,
+        ok: int,
+        total: int,
+        name: str,
+        geo: str,
+        tex: Optional[str],
+        out: Optional[str],
+        sim_proxy: bool,
+        proxy_quality: str,
+        background: bool,
+    ) -> None:
         self._progress.setVisible(False)
         self._log_msg(f"Finished texture conversion. {ok}/{total} succeeded.", "INFO")
+        try:
+            plan = self._make_plan(name, geo, tex, out, sim_proxy, proxy_quality)
+        except Exception as exc:  # noqa: BLE001
+            self._set_buttons_enabled(True)
+            self._set_status(f"Planning failed after texture conversion: {exc}", error=True)
+            self._log_msg(f"ERROR: Planning failed after texture conversion: {exc}", "ERROR")
+            return
         self._execute_build(plan, background)
 
     def _on_tx_failed(self, error_msg: str) -> None:
@@ -584,6 +602,25 @@ class LopsAssetBuilderWidget(QtWidgets.QWidget):
                     self._set_status("Build succeeded, but USD save failed.", error=True)
         else:
             self._set_status("Build failed (empty output results).", error=True)
+
+    def _make_plan(
+        self,
+        name: str,
+        geo: str,
+        tex: Optional[str],
+        out: Optional[str],
+        sim_proxy: bool,
+        proxy_quality: str,
+    ) -> _core.AssetBuildPlan:
+        """Build a fresh asset plan from captured UI inputs."""
+        return _core.plan_asset(
+            name,
+            geo_path=geo,
+            tex_folder=tex,
+            output_dir=out,
+            generate_proxy=sim_proxy,
+            proxy_quality=proxy_quality,
+        )
 
     def _on_stage(self, step: int, total: int, label: str) -> None:
         """Main thread callback to update build progress bar."""

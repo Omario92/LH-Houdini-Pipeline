@@ -13,6 +13,7 @@ SideFX ships ``imaketx`` (NOT the OpenImageIO ``maketx``) at
       --newer                only rebuild if the source is newer
       --ocio                 use OCIO to detect input/output colour spaces
       -c / --colorconvert SRC DST   explicit colour conversion
+      -l / --linearize 0|1|2        sRGB linearization control (0 = off)
 
 Two halves, mirroring ``builder.py``:
 
@@ -85,6 +86,8 @@ class TxConversionSpec:
         dst_colorspace: Explicit target colourspace for ``-c`` (or ``None``).
         use_ocio:    Pass ``--ocio`` for automatic colourspace detection when
                      no explicit ``-c`` pair is given.
+        linearize:   Optional ``imaketx -l`` mode. ``0`` disables automatic
+                     sRGB linearization for RAW/data textures such as normals.
     """
     source:    Path
     output:    Path
@@ -94,6 +97,7 @@ class TxConversionSpec:
     src_colorspace: Optional[str] = None
     dst_colorspace: Optional[str] = None
     use_ocio:  bool     = True
+    linearize: Optional[int] = None
 
     @property
     def does_colorconvert(self) -> bool:
@@ -118,6 +122,8 @@ class TxConversionSpec:
             cmd += ["-c", str(self.src_colorspace), str(self.dst_colorspace)]
         elif self.use_ocio:
             cmd.append("--ocio")
+        if self.linearize is not None:
+            cmd += ["-l", str(self.linearize)]
         return cmd
 
 
@@ -183,9 +189,15 @@ class MaketxPlanner:
 
         src_cs: Optional[str] = None
         dst_cs: Optional[str] = None
+        use_ocio = False
+        linearize: Optional[int] = None
         if colorspace is ColorSpace.SRGB:
             src_cs = "srgb_texture"
             dst_cs = self._scene_linear
+        elif colorspace is not ColorSpace.RAW:
+            use_ocio = True
+        else:
+            linearize = 0
 
         return TxConversionSpec(
             source=src,
@@ -195,6 +207,8 @@ class MaketxPlanner:
             only_newer=self._only_newer,
             src_colorspace=src_cs,
             dst_colorspace=dst_cs,
+            use_ocio=use_ocio,
+            linearize=linearize,
         )
 
     def plan_info(

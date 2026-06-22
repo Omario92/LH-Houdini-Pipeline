@@ -71,8 +71,24 @@ check("sRGB texture -> colorconvert + .rat output", _color_gets_colorconvert)
 def _raw_no_colorconvert():
     spec = _planner.plan_path("/tex/hero_rough.exr", ColorSpace.RAW)
     assert not spec.does_colorconvert
-    assert spec.use_ocio
-check("raw texture -> no -c, uses --ocio", _raw_no_colorconvert)
+    assert not spec.use_ocio
+    assert spec.linearize == 0, spec.linearize
+check("raw texture -> no -c, no --ocio, linearize off", _raw_no_colorconvert)
+
+def _png_output_drops_source_extension():
+    spec = _planner.plan_path("/tex/hero_normal.png", ColorSpace.RAW)
+    assert spec.output.name == "hero_normal.rat", spec.output.name
+check("png texture -> .rat output, not .png.rat", _png_output_drops_source_extension)
+
+def _normal_info_is_passthrough():
+    parser = TextureParser()
+    info = parser.parse("/tex/robot_Normal.png")
+    spec = _planner.plan_info(info)
+    cmd = spec.build_command("imaketx")
+    assert spec.output.name == "robot_Normal.rat", spec.output.name
+    assert "-c" not in cmd and "--ocio" not in cmd, cmd
+    assert "-l" in cmd and cmd[cmd.index("-l") + 1] == "0", cmd
+check("normal map conversion disables linearize", _normal_info_is_passthrough)
 
 def _out_dir_override():
     spec = _planner.plan_path("/tex/a_normal.exr", ColorSpace.RAW, out_dir="/tx")
@@ -109,10 +125,11 @@ check("color command: infile/outfile + -c pair", _cmd_color)
 def _cmd_raw_ocio():
     spec = _planner.plan_path("/tex/d_rough.exr", ColorSpace.RAW)
     cmd = spec.build_command("imaketx")
-    assert "--ocio" in cmd
+    assert "--ocio" not in cmd
     assert "-c" not in cmd
+    assert "-l" in cmd and cmd[cmd.index("-l") + 1] == "0", cmd
     assert "--newer" in cmd
-check("raw command: --ocio, no -c, --newer", _cmd_raw_ocio)
+check("raw command: no color management, -l 0, --newer", _cmd_raw_ocio)
 
 
 print("\n=== converter (dry-run, no process) ===")

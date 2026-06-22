@@ -22,6 +22,7 @@ def _imp():
     from lh_houdini_pipeline.tools.lops_asset_builder import service  # hou lazy
 check("lops_asset_builder imports without hou", _imp)
 
+from lh_houdini_pipeline.file.texture_parser import TextureChannel
 from lh_houdini_pipeline.tools.lops_asset_builder import plan_asset, MaterialAssignment
 
 print("\n=== planning ===")
@@ -76,6 +77,30 @@ def _explicit_assign():
     p=plan_asset("hero", tex_folder=_single, assignments=binds)
     assert p.assignments==tuple(binds)
 check("explicit assignments override default", _explicit_assign)
+
+_untagged=_fixture([
+    "texture_pbr_20250901.png",
+    "texture_pbr_20250901.rat",
+    "texture_pbr_20250901.png.rat",
+    "texture_pbr_20250901_metallic.png",
+    "texture_pbr_20250901_metallic.rat",
+    "texture_pbr_20250901_metallic.png.rat",
+])
+_fbx_dir=tempfile.mkdtemp(prefix="lh_asset_fbx_")
+_fbx_path=os.path.join(_fbx_dir,"robot.fbx")
+open(_fbx_path,"w").close()
+def _fbx_untagged_basecolor():
+    p=plan_asset("robot", geo_path=_fbx_path, tex_folder=_untagged)
+    assert len(p.material_plans)==1, len(p.material_plans)
+    plan=p.material_plans[0]
+    assert plan.name=="texture_pbr", plan.name
+    chans=set(img.channel for img in plan.images)
+    assert chans=={TextureChannel.BASE_COLOR, TextureChannel.METALNESS}, chans
+    paths={img.channel: img.file_path for img in plan.images}
+    assert paths[TextureChannel.BASE_COLOR].endswith("texture_pbr_20250901.rat"), paths
+    assert paths[TextureChannel.METALNESS].endswith("texture_pbr_20250901_metallic.rat"), paths
+    assert p.assignments[0].material_name=="texture_pbr", p.assignments
+check("FBX untagged texture + metallic -> one .rat material", _fbx_untagged_basecolor)
 
 print("\n=== summary ===")
 if errors:

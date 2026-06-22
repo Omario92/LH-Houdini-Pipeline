@@ -19,6 +19,7 @@ from typing import List, Optional
 
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.project_manager.controller import ProjectController
+from lh_houdini_pipeline.tools.project_manager import settings as _settings
 from lh_houdini_pipeline.ui import style as _style
 
 _log = get_logger(__name__)
@@ -138,6 +139,116 @@ class DropLineEdit(QtWidgets.QLineEdit):
         """Re-evaluate the dynamic ``dropActive`` style property."""
         self.style().unpolish(self)
         self.style().polish(self)
+
+
+# ---------------------------------------------------------------------------
+# Settings dialog
+# ---------------------------------------------------------------------------
+
+class ProjectSettingsDialog(QtWidgets.QDialog):
+    """Dialog for choosing which default project folders should be created.
+
+    Args:
+        current_folders: Folder paths currently enabled by the controller.
+        parent: Optional Qt parent.
+    """
+
+    def __init__(
+        self,
+        current_folders: tuple[str, ...],
+        parent: Optional[QtWidgets.QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Project Manager Settings")
+        self.setMinimumWidth(420)
+        self._checks: dict[str, QtWidgets.QCheckBox] = {}
+        self._saved = False
+        self._build_ui()
+        self.set_selected(current_folders)
+
+    @property
+    def saved(self) -> bool:
+        """Return ``True`` when the user accepted the dialog with Save."""
+        return self._saved
+
+    def selected_folders(self) -> List[str]:
+        """Return folders checked by the user in display order.
+
+        Returns:
+            Selected folder paths.
+        """
+        return [
+            folder for folder, check in self._checks.items()
+            if check.isChecked()
+        ]
+
+    def set_selected(self, folders: tuple[str, ...]) -> None:
+        """Apply a selected folder set to the checkbox list.
+
+        Args:
+            folders: Folder paths that should be checked.
+        """
+        selected = set(_settings.validate_folders(folders))
+        for folder, check in self._checks.items():
+            check.setChecked(folder in selected)
+
+    def _build_ui(self) -> None:
+        """Build preset controls, checkbox grid, and action buttons."""
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(14, 14, 14, 14)
+        outer.setSpacing(12)
+
+        folders_box = QtWidgets.QGroupBox("Default Folders to Create")
+        folders_layout = QtWidgets.QVBoxLayout(folders_box)
+
+        preset_row = QtWidgets.QHBoxLayout()
+        full_btn = QtWidgets.QPushButton("Full")
+        minimal_btn = QtWidgets.QPushButton("Minimal")
+        lookdev_btn = QtWidgets.QPushButton("Lookdev")
+        full_btn.clicked.connect(lambda: self.set_selected(_settings.preset_full()))
+        minimal_btn.clicked.connect(lambda: self.set_selected(_settings.preset_minimal()))
+        lookdev_btn.clicked.connect(lambda: self.set_selected(_settings.preset_lookdev()))
+        preset_row.addWidget(full_btn)
+        preset_row.addWidget(minimal_btn)
+        preset_row.addWidget(lookdev_btn)
+        preset_row.addStretch(1)
+        folders_layout.addLayout(preset_row)
+
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(7)
+        for index, folder in enumerate(_settings.available_folders()):
+            check = QtWidgets.QCheckBox(folder)
+            self._checks[folder] = check
+            grid.addWidget(check, index // 2, index % 2)
+        folders_layout.addLayout(grid)
+        outer.addWidget(folders_box)
+
+        hint = QtWidgets.QLabel(
+            "These folders are used when 'Create default folder structure' is enabled."
+        )
+        hint.setObjectName("hintLabel")
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
+        actions = QtWidgets.QHBoxLayout()
+        reset_btn = QtWidgets.QPushButton("Reset to Default")
+        reset_btn.clicked.connect(lambda: self.set_selected(_settings.preset_full()))
+        cancel_btn = QtWidgets.QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QtWidgets.QPushButton("Save")
+        save_btn.setObjectName("primaryBtn")
+        save_btn.clicked.connect(self._accept_save)
+        actions.addWidget(reset_btn)
+        actions.addStretch(1)
+        actions.addWidget(cancel_btn)
+        actions.addWidget(save_btn)
+        outer.addLayout(actions)
+
+    def _accept_save(self) -> None:
+        """Mark the dialog as saved and close with ``Accepted``."""
+        self._saved = True
+        self.accept()
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +372,9 @@ class ProjectManagerUI(QtWidgets.QWidget):
         btns = QtWidgets.QHBoxLayout()
         preview_btn = QtWidgets.QPushButton("Preview")
         preview_btn.clicked.connect(self._refresh_validation_and_preview)
+        settings_btn = QtWidgets.QPushButton("Settings")
+        settings_btn.setToolTip("Choose which default folders are created.")
+        settings_btn.clicked.connect(self._open_settings)
         self._dryrun_btn = QtWidgets.QPushButton("Dry-run")
         self._dryrun_btn.setObjectName("warnBtn")
         self._dryrun_btn.clicked.connect(lambda: self._do_create(dry_run=True))
@@ -268,6 +382,7 @@ class ProjectManagerUI(QtWidgets.QWidget):
         self._create_btn.setObjectName("primaryBtn")
         self._create_btn.clicked.connect(lambda: self._do_create(dry_run=False))
         btns.addWidget(preview_btn)
+        btns.addWidget(settings_btn)
         btns.addStretch(1)
         btns.addWidget(self._dryrun_btn)
         btns.addWidget(self._create_btn)
@@ -360,6 +475,19 @@ class ProjectManagerUI(QtWidgets.QWidget):
             self._assets_edit.text(), self._shots_edit.text(),
             default_structure=self._structure_cb.isChecked(),
             dry_run=dry_run, set_job=self._setjob_cb.isChecked())
+
+    def _open_settings(self) -> None:
+        """Open the settings dialog and persist selected default folders."""
+        dialog = ProjectSettingsDialog(
+            self._controller.settings().project_folders,
+            parent=self,
+        )
+        dialog.setStyleSheet(self.styleSheet())
+        exec_fn = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
+        if exec_fn() != QtWidgets.QDialog.Accepted or not dialog.saved:
+            return
+        self._controller.save_settings(dialog.selected_folders())
+        self._queue_refresh()
 
     def _on_toggle_log(self, shown: bool) -> None:
         """Show/hide the log panel."""

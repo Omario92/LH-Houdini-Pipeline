@@ -38,6 +38,17 @@ from lh_houdini_pipeline.tools.project_manager.service import (
     scan_projects,
     set_houdini_job,
 )
+from lh_houdini_pipeline.tools.project_manager.settings import (
+    ProjectManagerSettings,
+    available_folders,
+    load_settings,
+    preset_full,
+    preset_lookdev,
+    preset_minimal,
+    reset_settings,
+    save_settings,
+    validate_folders,
+)
 
 __all__ = [
     "ProjectPlan",
@@ -52,6 +63,15 @@ __all__ = [
     "next_work_version",
     "list_work_files",
     "set_houdini_job",
+    "ProjectManagerSettings",
+    "available_folders",
+    "load_settings",
+    "save_settings",
+    "reset_settings",
+    "validate_folders",
+    "preset_full",
+    "preset_minimal",
+    "preset_lookdev",
     "launch",
 ]
 

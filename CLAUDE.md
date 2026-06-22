@@ -248,3 +248,13 @@ Khi viết code Houdini-specific:
 | 2026-06-22 | project_manager: added controller.py (ProjectController QObject: validate/preview/create signals) + core.sanitize_name |
 | 2026-06-22 | project_manager UI redesign (PySide6 dark theme): 3-zone cards, drag&drop root, real-time validation, QTreeWidget preview, status bar, collapsible log, Dry-run/Create |
 | 2026-06-22 | VERIFIED live PySide6: validation gating, sanitize hint, tree preview (37 dirs), dry-run no-write, create+\$JOB, exists-warning, minimal-toggle |
+| 2026-06-22 | project_manager: added persistent JSON folder settings, Settings dialog presets, and selected-folder create/preview integration |
+| 2026-06-22 | VERIFIED with Houdini 21.0.631 hython: Project Manager settings import, PySide6 dialog, selected-folder plan, and dry-run |
+| 2026-06-22 | VERIFIED with live HoudiniMCP on localhost:9876: execute_code reloads Project Manager worktree and validates Settings dialog + selected folders |
+| 2026-06-22 | lops_asset_builder: fixed component material paths to /ASSET/materials, enabled material flags for Material Library filtering, and promoted untagged FBX textures to baseColor |
+| 2026-06-22 | VERIFIED with live HoudiniMCP: LOPs Asset Builder creates valid /ASSET/materials prim, material flag true, and component material assignment path correct |
+| 2026-06-22 | lops_asset_builder: grouped FBX date-stamped PBR textures into one material, fixed metallic detection, and replans after .rat conversion so materials use converted files |
+| 2026-06-22 | VERIFIED with live HoudiniMCP: texture_pbr base/metallic/normal/roughness maps build one material and all mtlximage nodes use .rat files |
+| 2026-06-22 | materialx.tx/lops_asset_builder: fixed imaketx output naming to drop source extensions (.png -> .rat, not .png.rat) and prefer clean .rat over legacy double-extension files |
+| 2026-06-22 | materialx.tx: RAW/data texture conversion is now pass-through (no --ocio/no -c) so normal/roughness/metalness RAT files preserve data values |
+| 2026-06-22 | materialx.tx: RAW/data imaketx commands now add -l 0 to disable automatic sRGB linearization for normal maps |

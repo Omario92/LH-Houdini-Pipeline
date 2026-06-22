@@ -340,6 +340,14 @@ def _safe_name(name: str) -> str:
     return safe
 
 
+def _set_material_flag(node: Any) -> None:
+    """Enable Houdini's material flag on a VOP material container if present."""
+    try:
+        node.setMaterialFlag(True)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("Material flag unavailable on " + node.path() + ": " + str(exc))
+
+
 # ---------------------------------------------------------------------------
 # Network builder (hou -- lazily imported)
 # ---------------------------------------------------------------------------
@@ -475,7 +483,9 @@ class MtlxNetworkBuilder:
                     "Material '" + name + "' already exists; creating a unique copy."
                 )
         try:
-            return parent.createNode(_NT_SUBNET, name)
+            subnet = parent.createNode(_NT_SUBNET, name)
+            _set_material_flag(subnet)
+            return subnet
         except Exception as exc:  # noqa: BLE001
             _log.error("Failed to create subnet '" + name + "': " + str(exc))
             return None
