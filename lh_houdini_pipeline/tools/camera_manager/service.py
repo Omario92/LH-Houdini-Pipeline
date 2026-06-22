@@ -28,8 +28,10 @@ from lh_houdini_pipeline.tools.camera_manager.core import (
     CameraTiming,
     MergePlan,
     TurntableSpec,
+    CameraFrameData,
     plan_merge,
     turntable_transforms,
+    write_nuke_camera_script,
 )
 
 _log = get_logger(__name__)
@@ -419,3 +421,334 @@ def _eval(node: Any, parm_name: str) -> float:
         return parm.eval() if parm is not None else 0
     except Exception:  # noqa: BLE001
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Camera Export and Baking (USD / Alembic / Nuke .nk)
+# ---------------------------------------------------------------------------
+
+def get_camera_frames(camera_path: str, start_frame: int, end_frame: int) -> List[CameraFrameData]:
+    """Extract world-space CameraFrameData from an OBJ or LOP camera over a range.
+
+    Args:
+        camera_path: Path to the camera node.
+        start_frame: Start frame.
+        end_frame:   End frame.
+
+    Returns:
+        List of CameraFrameData.
+    """
+    import hou  # noqa: PLC0415
+    node = _lop.get_node(camera_path)
+    if node is None:
+        _log.error("get_camera_frames: Node not found: " + camera_path)
+        return []
+
+    is_lop = (node.type().name() == "camera")
+    frames_data: List[CameraFrameData] = []
+
+    if is_lop:
+        from pxr import Usd, UsdGeom  # noqa: PLC0415
+        stage = node.stage()
+        prim_path = node.parm("primpath").eval() if node.parm("primpath") else "/" + node.name()
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            _log.error("get_camera_frames: LOP prim not found at " + prim_path)
+            return []
+
+        usd_cam = UsdGeom.Camera(prim)
+        xformable = UsdGeom.Xformable(prim)
+
+        for f in range(start_frame, end_frame + 1):
+            time_code = Usd.TimeCode(f)
+            # Compute world transform matrix
+            matrix = xformable.ComputeLocalToWorldTransform(time_code)
+            # Convert to hou.Matrix4 to explode
+            flat_vals = list(matrix.GetFlat())
+            hou_matrix = hou.Matrix4(flat_vals)
+            exploded = hou_matrix.explode(rotate_order="xyz")
+            tx, ty, tz = exploded["translate"]
+            rx, ry, rz = exploded["rotate"]
+
+            # Evaluate other attributes
+            focal = usd_cam.GetFocalLengthAttr().Get(time_code)
+            focal = focal if focal is not None else 50.0
+
+            hap = usd_cam.GetHorizontalApertureAttr().Get(time_code)
+            hap = hap if hap is not None else 41.4214
+
+            vap = usd_cam.GetVerticalApertureAttr().Get(time_code)
+            vap = vap if vap is not None else 41.4214
+            
+            near = 0.1
+            far = 10000.0
+            clipping = usd_cam.GetClippingRangeAttr().Get(time_code)
+            if clipping:
+                near, far = clipping[0], clipping[1]
+
+            fstop = usd_cam.GetFStopAttr().Get(time_code)
+            fstop = fstop if fstop is not None else 5.6
+
+            focus = usd_cam.GetFocusDistanceAttr().Get(time_code)
+            focus = focus if focus is not None else 5.0
+
+            frames_data.append(CameraFrameData(
+                frame=f, tx=tx, ty=ty, tz=tz, rx=rx, ry=ry, rz=rz,
+                focal=focal, haperture=hap, vaperture=vap,
+                near=near, far=far, fstop=fstop, focus=focus
+            ))
+    else:
+        # OBJ camera
+        for f in range(start_frame, end_frame + 1):
+            time = hou.playbar.time(f)
+            # Compute world transform
+            hou_matrix = node.worldTransformAtTime(time)
+            exploded = hou_matrix.explode(rotate_order="xyz")
+            tx, ty, tz = exploded["translate"]
+            rx, ry, rz = exploded["rotate"]
+
+            focal = node.parm("focal").evalAtTime(time) if node.parm("focal") else 50.0
+            hap = node.parm("aperture").evalAtTime(time) if node.parm("aperture") else 41.4214
+            
+            # Derive vertical aperture
+            resx = node.parm("resx").evalAtTime(time) if node.parm("resx") else 1920.0
+            resy = node.parm("resy").evalAtTime(time) if node.parm("resy") else 1080.0
+            vap = hap * (resy / resx) if resx else hap
+
+            near = node.parm("near").evalAtTime(time) if node.parm("near") else 0.1
+            far = node.parm("far").evalAtTime(time) if node.parm("far") else 10000.0
+            fstop = node.parm("fstop").evalAtTime(time) if node.parm("fstop") else 5.6
+            focus = node.parm("focus").evalAtTime(time) if node.parm("focus") else 5.0
+
+            frames_data.append(CameraFrameData(
+                frame=f, tx=tx, ty=ty, tz=tz, rx=rx, ry=ry, rz=rz,
+                focal=focal, haperture=hap, vaperture=vap,
+                near=near, far=far, fstop=fstop, focus=focus
+            ))
+
+    return frames_data
+
+
+def bake_camera_to_usd(
+    camera_path: str,
+    output_path: str,
+    start_frame: int,
+    end_frame: int,
+) -> bool:
+    """Bake an OBJ or LOP camera's animation to a standalone USD file.
+
+    Args:
+        camera_path: Path to the camera node.
+        output_path: Destination USD file path.
+        start_frame: First frame of baked animation.
+        end_frame:   Last frame of baked animation.
+
+    Returns:
+        True if baking succeeded, False otherwise.
+    """
+    from pxr import Usd, UsdGeom, Gf  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    frames_data = get_camera_frames(camera_path, start_frame, end_frame)
+    if not frames_data:
+        return False
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        # If file exists, remove it so CreateNew succeeds
+        if os.path.exists(output_path):
+            os.remove(output_path)
+
+        stage = Usd.Stage.CreateNew(output_path)
+        stage.SetMetadata("startFrame", float(start_frame))
+        stage.SetMetadata("endFrame", float(end_frame))
+
+        root_prim = stage.DefinePrim("/root", "Xform")
+        stage.SetDefaultPrim(root_prim)
+
+        # Create camera prim
+        cam_prim = stage.DefinePrim("/root/camera", "Camera")
+        usd_cam = UsdGeom.Camera(cam_prim)
+        xformable = UsdGeom.Xformable(cam_prim)
+        
+        # Clear existing ops and add a single transform matrix op
+        xformable.ClearXformOpOrder()
+        transform_op = xformable.AddTransformOp()
+
+        for fd in frames_data:
+            time_code = Usd.TimeCode(fd.frame)
+
+            # Reconstruct Gf.Matrix4d from translation/rotation (XYZ Euler)
+            m = Gf.Matrix4d()
+            m.SetTranslate(Gf.Vec3d(fd.tx, fd.ty, fd.tz))
+            m.SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), fd.rx) *
+                        Gf.Rotation(Gf.Vec3d(0, 1, 0), fd.ry) *
+                        Gf.Rotation(Gf.Vec3d(0, 0, 1), fd.rz))
+
+            transform_op.Set(m, time_code)
+
+            # Set camera attributes
+            usd_cam.GetFocalLengthAttr().Set(fd.focal, time_code)
+            usd_cam.GetHorizontalApertureAttr().Set(fd.haperture, time_code)
+            usd_cam.GetVerticalApertureAttr().Set(fd.vaperture, time_code)
+            usd_cam.GetClippingRangeAttr().Set(Gf.Vec2f(fd.near, fd.far), time_code)
+            usd_cam.GetFStopAttr().Set(fd.fstop, time_code)
+            usd_cam.GetFocusDistanceAttr().Set(fd.focus, time_code)
+
+        stage.GetRootLayer().Save()
+        _log.info("Baked camera " + camera_path + " to USD: " + output_path)
+        return True
+    except Exception as exc:
+        _log.error("bake_camera_to_usd failed: " + str(exc))
+        return False
+
+
+def export_camera_to_alembic(
+    camera_path: str,
+    output_path: str,
+    start_frame: int,
+    end_frame: int,
+) -> bool:
+    """Export an OBJ or LOP camera to an Alembic (.abc) file.
+
+    Args:
+        camera_path: Path to the camera node.
+        output_path: Destination Alembic file path.
+        start_frame: Start frame.
+        end_frame:   End frame.
+
+    Returns:
+        True if export succeeded, False otherwise.
+    """
+    import hou  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    node = _lop.get_node(camera_path)
+    if node is None:
+        _log.error("export_camera_to_alembic: Camera node not found: " + camera_path)
+        return False
+
+    is_lop = (node.type().name() == "camera")
+    temp_obj_cam = None
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+        if is_lop:
+            # LOP camera must be baked onto a temp OBJ camera first
+            frames_data = get_camera_frames(camera_path, start_frame, end_frame)
+            if not frames_data:
+                return False
+
+            temp_obj_cam = hou.node("/obj").createNode("cam", "temp_abc_bake_cam")
+            for fd in frames_data:
+                for pname, val in [
+                    ("tx", fd.tx), ("ty", fd.ty), ("tz", fd.tz),
+                    ("rx", fd.rx), ("ry", fd.ry), ("rz", fd.rz),
+                    ("focal", fd.focal), ("aperture", fd.haperture),
+                    ("near", fd.near), ("far", fd.far),
+                    ("fstop", fd.fstop), ("focus", fd.focus),
+                ]:
+                    parm = temp_obj_cam.parm(pname)
+                    if parm is not None:
+                        kf = hou.Keyframe()
+                        kf.setFrame(fd.frame)
+                        kf.setValue(val)
+                        parm.setKeyframe(kf)
+                
+                # set resolution to match aspect ratio
+                if fd.haperture:
+                    resx = 1920.0
+                    resy = 1920.0 * (fd.vaperture / fd.haperture)
+                    temp_obj_cam.parm("resx").set(int(resx))
+                    temp_obj_cam.parm("resy").set(int(resy))
+
+            export_target_path = temp_obj_cam.path()
+        else:
+            export_target_path = camera_path
+
+        # Create temporary Alembic ROP in /out
+        out_node = hou.node("/out")
+        rop = out_node.createNode("alembic", "abc_export_temp")
+        rop.parm("filename").set(output_path)
+        rop.parm("objects").set(export_target_path)
+        rop.parm("trange").set(1)  # Render Frame Range
+        rop.parm("f1").set(start_frame)
+        rop.parm("f2").set(end_frame)
+        
+        # Cook/Execute ROP
+        rop.parm("execute").pressButton()
+        rop.destroy()
+
+        _log.info("Exported camera " + camera_path + " to Alembic: " + output_path)
+        return True
+
+    except Exception as exc:
+        _log.error("export_camera_to_alembic failed: " + str(exc))
+        return False
+
+    finally:
+        if temp_obj_cam is not None:
+            try:
+                temp_obj_cam.destroy()
+            except Exception:
+                pass
+
+
+def export_camera(
+    camera_path: str,
+    output_dir: str,
+    file_name_base: str,
+    formats: List[str],
+    start_frame: int,
+    end_frame: int,
+) -> Dict[str, str]:
+    """Export a camera to multiple formats (usd, alembic, nuke).
+
+    Args:
+        camera_path:    Path to the camera node (OBJ or LOP).
+        output_dir:     Directory to write the files to.
+        file_name_base: Filename base (without extension).
+        formats:        List of formats: 'usd', 'alembic', 'nuke'.
+        start_frame:    First frame.
+        end_frame:      Last frame.
+
+    Returns:
+        Dict mapping format name to exported file path.
+    """
+    import os  # noqa: PLC0415
+    results = {}
+    
+    # Ensure dir exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    node = _lop.get_node(camera_path)
+    if node is None:
+        _log.error("export_camera: Camera node not found: " + camera_path)
+        return results
+
+    if "nuke" in formats:
+        nk_path = os.path.join(output_dir, file_name_base + ".nk")
+        frames_data = get_camera_frames(camera_path, start_frame, end_frame)
+        if frames_data:
+            if write_nuke_camera_script(node.name(), frames_data, nk_path):
+                results["nuke"] = nk_path
+            else:
+                _log.error("Failed to export Nuke script to " + nk_path)
+
+    if "usd" in formats:
+        usd_path = os.path.join(output_dir, file_name_base + ".usd")
+        if bake_camera_to_usd(camera_path, usd_path, start_frame, end_frame):
+            results["usd"] = usd_path
+        else:
+            _log.error("Failed to bake camera to USD: " + usd_path)
+
+    if "alembic" in formats:
+        abc_path = os.path.join(output_dir, file_name_base + ".abc")
+        if export_camera_to_alembic(camera_path, abc_path, start_frame, end_frame):
+            results["alembic"] = abc_path
+        else:
+            _log.error("Failed to export camera to Alembic: " + abc_path)
+
+    return results
+

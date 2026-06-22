@@ -27,9 +27,11 @@ from lh_houdini_pipeline.tools.camera_manager.core import (
     ResolutionPreset,
     TurntableSpec,
     TurntableKey,
+    CameraFrameData,
     plan_merge,
     spec_from_preset,
     turntable_transforms,
+    write_nuke_camera_script,
 )
 from lh_houdini_pipeline.tools.camera_manager.service import (
     CameraInfo,
@@ -41,6 +43,8 @@ from lh_houdini_pipeline.tools.camera_manager.service import (
     list_cameras,
     merge_cameras,
     sync_playback_range,
+    bake_camera_to_usd,
+    export_camera,
 )
 
 __all__ = [
@@ -52,8 +56,10 @@ __all__ = [
     "MergePlan",
     "TurntableSpec",
     "TurntableKey",
+    "CameraFrameData",
     "plan_merge",
     "turntable_transforms",
+    "write_nuke_camera_script",
     "CameraInfo",
     "create_camera",
     "list_cameras",
@@ -63,6 +69,8 @@ __all__ = [
     "sync_playback_range",
     "merge_cameras",
     "create_turntable",
+    "bake_camera_to_usd",
+    "export_camera",
     "launch",
 ]
 

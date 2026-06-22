@@ -342,3 +342,105 @@ def turntable_transforms(
             rz=0.0,
         ))
     return keys
+
+
+# ---------------------------------------------------------------------------
+# Exporting (Nuke .nk / CameraFrameData definition)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CameraFrameData:
+    """Baked camera parameters for a single frame.
+
+    Attributes:
+        frame:      Frame number.
+        tx, ty, tz: World-space position.
+        rx, ry, rz: World-space rotation (Euler XYZ order).
+        focal:      Focal length in millimetres.
+        haperture:  Horizontal aperture in millimetres.
+        vaperture:  Vertical aperture in millimetres.
+        near:       Near clipping plane.
+        far:        Far clipping plane.
+        fstop:      Lens f-stop.
+        focus:      Focus distance.
+    """
+    frame:      int
+    tx:         float
+    ty:         float
+    tz:         float
+    rx:         float
+    ry:         float
+    rz:         float
+    focal:      float
+    haperture:  float
+    vaperture:  float
+    near:       float
+    far:         float
+    fstop:      float
+    focus:      float
+
+
+def write_nuke_camera_script(name: str, frames: List[CameraFrameData], output_path: str) -> bool:
+    """Generate a Nuke .nk camera script from baked frame data.
+
+    Args:
+        name:        Name of the Nuke camera node.
+        frames:      Ordered list of CameraFrameData.
+        output_path: Path to write the .nk file to.
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    if not frames:
+        return False
+
+    def make_nuke_curve(vals: List[Tuple[int, float]]) -> str:
+        # returns "curve x1001 val1 x1002 val2 ..."
+        parts = []
+        for f, v in vals:
+            parts.append(f"x{f}")
+            # Format to float with 6 decimal places to prevent scientific notation issues in older Nuke versions
+            parts.append(f"{v:.6f}")
+        return "curve " + " ".join(parts)
+
+    tx_curve = make_nuke_curve([(fd.frame, fd.tx) for fd in frames])
+    ty_curve = make_nuke_curve([(fd.frame, fd.ty) for fd in frames])
+    tz_curve = make_nuke_curve([(fd.frame, fd.tz) for fd in frames])
+    rx_curve = make_nuke_curve([(fd.frame, fd.rx) for fd in frames])
+    ry_curve = make_nuke_curve([(fd.frame, fd.ry) for fd in frames])
+    rz_curve = make_nuke_curve([(fd.frame, fd.rz) for fd in frames])
+    focal_curve = make_nuke_curve([(fd.frame, fd.focal) for fd in frames])
+    haperture_curve = make_nuke_curve([(fd.frame, fd.haperture) for fd in frames])
+    vaperture_curve = make_nuke_curve([(fd.frame, fd.vaperture) for fd in frames])
+    near_curve = make_nuke_curve([(fd.frame, fd.near) for fd in frames])
+    far_curve = make_nuke_curve([(fd.frame, fd.far) for fd in frames])
+    fstop_curve = make_nuke_curve([(fd.frame, fd.fstop) for fd in frames])
+    focus_curve = make_nuke_curve([(fd.frame, fd.focus) for fd in frames])
+
+    nk_content = (
+        f"# Write by LH Houdini Pipeline\n"
+        f"Camera2 {{\n"
+        f" inputs 0\n"
+        f" name {name}\n"
+        f" rot_order XYZ\n"
+        f" translate {{{{ {tx_curve} }} {{ {ty_curve} }} {{ {tz_curve} }}}}\n"
+        f" rotate {{{{ {rx_curve} }} {{ {ry_curve} }} {{ {rz_curve} }}}}\n"
+        f" focal {{{{ {focal_curve} }}}}\n"
+        f" haperture {{{{ {haperture_curve} }}}}\n"
+        f" vaperture {{{{ {vaperture_curve} }}}}\n"
+        f" near {{{{ {near_curve} }}}}\n"
+        f" far {{{{ {far_curve} }}}}\n"
+        f" fstop {{{{ {fstop_curve} }}}}\n"
+        f" focal_point {{{{ {focus_curve} }}}}\n"
+        f"}}\n"
+    )
+
+    try:
+        import os
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(nk_content)
+        return True
+    except Exception:
+        return False
+

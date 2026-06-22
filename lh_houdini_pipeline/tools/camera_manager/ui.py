@@ -10,7 +10,7 @@ on the main thread.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.camera_manager import core as _core
@@ -92,10 +92,14 @@ class CameraManagerWidget(QtWidgets.QWidget):
         self._turntable_btn = QtWidgets.QPushButton("Turntable (USD)")
         self._turntable_btn.setToolTip("Create a 360 turntable camera in /stage.")
         self._turntable_btn.clicked.connect(self._on_turntable)
+        self._export_btn = QtWidgets.QPushButton("Export Selected...")
+        self._export_btn.setToolTip("Export the selected camera to USD, Alembic, or Nuke format.")
+        self._export_btn.clicked.connect(self._on_export)
         ops_row.addWidget(self._delete_btn)
         ops_row.addWidget(self._sync_btn)
         ops_row.addWidget(self._merge_btn)
         ops_row.addWidget(self._turntable_btn)
+        ops_row.addWidget(self._export_btn)
         layout.addLayout(ops_row)
 
         self._status = QtWidgets.QLabel("Ready.")
@@ -221,10 +225,157 @@ class CameraManagerWidget(QtWidgets.QWidget):
         else:
             self._set_status("Turntable creation failed (see log).", error=True)
 
+    def _on_export(self) -> None:
+        """Open the export dialog and export the selected camera."""
+        paths = self._selected_paths()
+        if not paths:
+            self._set_status("Select a camera to export.", error=True)
+            return
+        
+        camera_path = paths[0]
+        
+        # Determine default start/end frame from playback range
+        try:
+            import hou  # noqa: PLC0415
+            start = int(hou.playbar.frameRange()[0])
+            end = int(hou.playbar.frameRange()[1])
+            rng = _service.camera_frame_range(camera_path)
+            if rng:
+                start, end = rng
+        except Exception:  # noqa: BLE001
+            start, end = 1001, 1050
+
+        dialog = CameraExportDialog(camera_path, (start, end), self)
+        exec_func = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
+        if exec_func() == QtWidgets.QDialog.Accepted:
+            cfg = dialog.get_config()
+            if not cfg["formats"]:
+                self._set_status("No formats selected for export.", error=True)
+                return
+            
+            try:
+                results = _service.export_camera(
+                    camera_path=camera_path,
+                    output_dir=cfg["output_dir"],
+                    file_name_base=cfg["file_name_base"],
+                    formats=cfg["formats"],
+                    start_frame=cfg["start_frame"],
+                    end_frame=cfg["end_frame"],
+                )
+                if results:
+                    self._set_status("Exported: " + ", ".join(results.keys()))
+                else:
+                    self._set_status("Export failed (see log).", error=True)
+            except Exception as exc:  # noqa: BLE001
+                self._set_status("Export failed: " + str(exc), error=True)
+                _log.exception("Camera export failed")
+
     def _set_status(self, message: str, error: bool = False) -> None:
         """Update the status label (red on error)."""
         self._status.setStyleSheet("color: #cc5555;" if error else "")
         self._status.setText(message)
+
+
+class CameraExportDialog(QtWidgets.QDialog):
+    """Dialog to configure and trigger camera export."""
+
+    def __init__(self, camera_path: str, default_range: Tuple[int, int], parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Export Camera")
+        self.camera_path = camera_path
+
+        layout = QtWidgets.QVBoxLayout(self)
+        form = QtWidgets.QFormLayout()
+
+        # Filename base
+        cam_name = camera_path.split("/")[-1]
+        self._name_edit = QtWidgets.QLineEdit(cam_name)
+        form.addRow("Filename Base:", self._name_edit)
+
+        # Output Directory
+        self._dir_edit = QtWidgets.QLineEdit()
+        import os  # noqa: PLC0415
+        try:
+            import hou  # noqa: PLC0415
+            job = hou.getenv("JOB")
+            if job:
+                self._dir_edit.setText(os.path.join(job, "export", "camera").replace("\\", "/"))
+            else:
+                self._dir_edit.setText(os.path.join(os.path.expanduser("~"), "Desktop").replace("\\", "/"))
+        except Exception:  # noqa: BLE001
+            self._dir_edit.setText(os.path.expanduser("~").replace("\\", "/"))
+
+        dir_row = QtWidgets.QHBoxLayout()
+        dir_row.addWidget(self._dir_edit)
+        self._browse_btn = QtWidgets.QPushButton("Browse...")
+        self._browse_btn.clicked.connect(self._on_browse)
+        dir_row.addWidget(self._browse_btn)
+        form.addRow("Output Directory:", dir_row)
+
+        # Formats
+        format_layout = QtWidgets.QHBoxLayout()
+        self._usd_cb = QtWidgets.QCheckBox("USD (.usd)")
+        self._usd_cb.setChecked(True)
+        self._abc_cb = QtWidgets.QCheckBox("Alembic (.abc)")
+        self._abc_cb.setChecked(True)
+        self._nk_cb = QtWidgets.QCheckBox("Nuke (.nk)")
+        self._nk_cb.setChecked(True)
+        format_layout.addWidget(self._usd_cb)
+        format_layout.addWidget(self._abc_cb)
+        format_layout.addWidget(self._nk_cb)
+        form.addRow("Formats:", format_layout)
+
+        # Frame Range
+        self._start_spin = QtWidgets.QSpinBox()
+        self._start_spin.setRange(-999999, 999999)
+        self._start_spin.setValue(int(default_range[0]))
+        self._end_spin = QtWidgets.QSpinBox()
+        self._end_spin.setRange(-999999, 999999)
+        self._end_spin.setValue(int(default_range[1]))
+        
+        range_layout = QtWidgets.QHBoxLayout()
+        range_layout.addWidget(QtWidgets.QLabel("Start:"))
+        range_layout.addWidget(self._start_spin)
+        range_layout.addWidget(QtWidgets.QLabel("End:"))
+        range_layout.addWidget(self._end_spin)
+        form.addRow("Frame Range:", range_layout)
+
+        layout.addLayout(form)
+
+        # Buttons
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            QtCore.Qt.Horizontal, self
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+        self.resize(450, 200)
+
+    def _on_browse(self) -> None:
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select Output Directory", self._dir_edit.text()
+        )
+        if path:
+            self._dir_edit.setText(path.replace("\\", "/"))
+
+    def get_config(self) -> dict:
+        formats = []
+        if self._usd_cb.isChecked():
+            formats.append("usd")
+        if self._abc_cb.isChecked():
+            formats.append("alembic")
+        if self._nk_cb.isChecked():
+            formats.append("nuke")
+
+        return {
+            "output_dir": self._dir_edit.text().strip(),
+            "file_name_base": self._name_edit.text().strip() or "exported_cam",
+            "formats": formats,
+            "start_frame": self._start_spin.value(),
+            "end_frame": self._end_spin.value(),
+        }
 
 
 def launch(parent: Optional[object] = None) -> "CameraManagerWidget":
@@ -244,3 +395,4 @@ def _houdini_main_window() -> Optional[object]:
         return hou.qt.mainWindow()
     except Exception:  # noqa: BLE001
         return None
+

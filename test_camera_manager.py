@@ -114,6 +114,49 @@ def _turntable_orbit_math():
     assert abs(k30.ry-90.0)<1e-6 and abs(k30.tx-10.0)<1e-6 and abs(k30.tz-0.0)<1e-6, k30
 check("turntable: orbit transform math (pos/ry/pitch)", _turntable_orbit_math)
 
+print("\n=== camera exporting ===")
+def _camera_frame_data():
+    from lh_houdini_pipeline.tools.camera_manager import CameraFrameData
+    fd = CameraFrameData(
+        frame=1001, tx=1.0, ty=2.0, tz=3.0, rx=10.0, ry=20.0, rz=30.0,
+        focal=35.0, haperture=24.0, vaperture=18.0, near=0.1, far=1000.0,
+        fstop=5.6, focus=5.0
+    )
+    assert fd.frame == 1001
+    assert fd.tx == 1.0
+    assert fd.focal == 35.0
+check("CameraFrameData structure", _camera_frame_data)
+
+def _nuke_camera_writer():
+    import tempfile, os
+    from lh_houdini_pipeline.tools.camera_manager import CameraFrameData, write_nuke_camera_script
+    fd1 = CameraFrameData(
+        frame=1001, tx=0.0, ty=0.0, tz=10.0, rx=0.0, ry=0.0, rz=0.0,
+        focal=35.0, haperture=10.0, vaperture=10.0, near=0.1, far=1000.0,
+        fstop=5.6, focus=5.0
+    )
+    fd2 = CameraFrameData(
+        frame=1002, tx=1.0, ty=0.0, tz=10.0, rx=0.0, ry=10.0, rz=0.0,
+        focal=35.0, haperture=10.0, vaperture=10.0, near=0.1, far=1000.0,
+        fstop=5.6, focus=5.0
+    )
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nk_file = os.path.join(tmpdir, "test_camera.nk")
+        ok = write_nuke_camera_script("NukeCam", [fd1, fd2], nk_file)
+        assert ok
+        assert os.path.exists(nk_file)
+        
+        with open(nk_file, "r") as f:
+            content = f.read()
+            
+        assert "Camera2 {" in content
+        assert "translate {{ curve x1001 0.000000 x1002 1.000000 } { curve x1001 0.000000 x1002 0.000000 } { curve x1001 10.000000 x1002 10.000000 }}" in content
+        assert "rotate {{ curve x1001 0.000000 x1002 0.000000 } { curve x1001 0.000000 x1002 10.000000 } { curve x1001 0.000000 x1002 0.000000 }}" in content
+        assert "focal {{ curve x1001 35.000000 x1002 35.000000 }}" in content
+        assert "rot_order XYZ" in content
+check("write_nuke_camera_script output", _nuke_camera_writer)
+
 
 print("\n=== summary ===")
 if errors:
