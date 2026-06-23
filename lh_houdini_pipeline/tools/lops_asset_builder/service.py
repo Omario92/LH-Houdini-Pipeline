@@ -28,11 +28,14 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from lh_houdini_pipeline.core.logger import get_logger
+from lh_houdini_pipeline.core.profiling import timed
 from lh_houdini_pipeline.houdini import lop as _lop
 from lh_houdini_pipeline.materialx.builder import MtlxNetworkBuilder
 from lh_houdini_pipeline.tools.lops_asset_builder.core import AssetBuildPlan
 
 _log = get_logger(__name__)
+
+_COMPONENT_MATERIAL_PREFIX = "/ASSET/materials/"
 
 
 @dataclass
@@ -55,6 +58,7 @@ class AssetBuildResult:
     materials_built: tuple = field(default_factory=tuple)
 
 
+@timed("lops_asset_builder.build_asset")
 def build_asset(
     plan: AssetBuildPlan,
     parent_path: str = "/stage",
@@ -99,6 +103,7 @@ def build_asset(
         _emit(2, "materials")
         matlib = _lop.create_node(parent, "materiallibrary", plan.asset_name + "_mtl", force=True)
         _require(matlib, "materiallibrary")
+        _lop.set_parm(matlib, "matpathprefix", _COMPONENT_MATERIAL_PREFIX)
         prefix = _material_prefix(matlib)
         built = MtlxNetworkBuilder(force=True).build_all(matlib, list(plan.material_plans))
         result.material_lib = matlib.path()
@@ -221,9 +226,9 @@ def _load_geometry(cg: Any, plan: AssetBuildPlan) -> None:
 def _material_prefix(matlib: Any) -> str:
     """Return the materiallibrary's prim-path prefix (always ends with '/')."""
     parm = matlib.parm("matpathprefix")
-    prefix = parm.eval() if parm is not None else "/ASSET/mtl/"
+    prefix = parm.eval() if parm is not None else _COMPONENT_MATERIAL_PREFIX
     if not prefix:
-        prefix = "/materials/"
+        prefix = _COMPONENT_MATERIAL_PREFIX
     if not prefix.endswith("/"):
         prefix = prefix + "/"
     return prefix

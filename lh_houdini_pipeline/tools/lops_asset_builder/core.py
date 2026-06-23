@@ -20,12 +20,14 @@ Being hou-free, this module backs a dry-run and is unit-testable with plain
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
 from lh_houdini_pipeline.core.logger import get_logger
-from lh_houdini_pipeline.materialx.builder import MaterialBuildPlan
+from lh_houdini_pipeline.file.texture_parser import ColorSpace, TextureChannel, TextureInfo
+from lh_houdini_pipeline.materialx.builder import MaterialBuildPlan, MaterialPlanner
 from lh_houdini_pipeline.tools.tex_to_mtlx.core import scan_and_plan
 
 PathLike = Union[str, Path]
@@ -33,6 +35,10 @@ _log = get_logger(__name__)
 
 #: USD ascii/binary/auto extensions accepted for the output file.
 _USD_EXTS = (".usd", ".usda", ".usdc")
+_DATE_TOKEN_RE = re.compile(r"(?:(?<=^)|(?<=[_\-. ]))\d{8}(?=$|[_\-. ])")
+_TEXTURE_SOURCE_EXTS = {
+    ".exr", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".hdr", ".dpx",
+}
 
 
 @dataclass(frozen=True)
@@ -146,10 +152,16 @@ def plan_asset(
 
     name = _safe_asset_name(asset_name)
 
+    geo = Path(geo_path) if geo_path is not None else None
     material_plans: Tuple[MaterialBuildPlan, ...] = ()
     if tex_folder is not None:
         result = scan_and_plan(tex_folder, recursive=recursive)
-        material_plans = result.plans
+        infos = _prefer_rat_infos(result.infos)
+        if _is_fbx(geo):
+            infos = _normalise_fbx_texture_infos(infos)
+        material_plans = tuple(MaterialPlanner().plan_from_infos(list(infos)))
+        if _should_promote_untagged_base_color(geo, infos, material_plans):
+            material_plans = _plan_with_untagged_base_color(list(infos))
         _log.info("Asset '" + name + "' textures: " + result.summary())
 
     if assignments is not None:
@@ -159,7 +171,7 @@ def plan_asset(
 
     plan = AssetBuildPlan(
         asset_name=name,
-        geo_path=Path(geo_path) if geo_path is not None else None,
+        geo_path=geo,
         material_plans=material_plans,
         assignments=binds,
         output_dir=Path(output_dir) if output_dir is not None else None,
@@ -183,3 +195,123 @@ def _default_assignments(
         MaterialAssignment("%type:Mesh & %name:" + mp.name + "*", mp.name)
         for mp in material_plans
     )
+
+
+def _should_promote_untagged_base_color(
+    geo_path: Optional[Path],
+    infos: Tuple[TextureInfo, ...],
+    material_plans: Tuple[MaterialBuildPlan, ...],
+) -> bool:
+    """Return ``True`` when FBX textures need an untagged base-color fallback.
+
+    FBX exports often ship one diffuse/base-color bitmap named only after the
+    material, e.g. ``texture_pbr_20250901.png``.  The generic texture parser
+    correctly marks that as ``UNKNOWN`` because it has no channel suffix, but
+    for FBX asset assembly it is useful to treat it as base color when no other
+    base-color texture exists in the folder.
+    """
+    if not _is_fbx(geo_path):
+        return False
+    if any(
+        img.channel is TextureChannel.BASE_COLOR
+        for plan in material_plans
+        for img in plan.images
+    ):
+        return False
+    return any(info.channel is TextureChannel.UNKNOWN for info in infos)
+
+
+def _plan_with_untagged_base_color(infos: List[TextureInfo]) -> Tuple[MaterialBuildPlan, ...]:
+    """Promote unrecognised textures to base-color and re-run material planning.
+
+    Args:
+        infos: Texture infos from the original scan.
+
+    Returns:
+        Replanned materials where untagged textures act as base-color maps.
+    """
+    promoted: List[TextureInfo] = []
+    for info in infos:
+        if info.channel is TextureChannel.UNKNOWN:
+            promoted.append(
+                replace(
+                    info,
+                    channel=TextureChannel.BASE_COLOR,
+                    colorspace=ColorSpace.SRGB,
+                    warnings=info.warnings + ("Promoted untagged FBX texture to baseColor.",),
+                )
+            )
+        else:
+            promoted.append(info)
+    return tuple(MaterialPlanner().plan_from_infos(promoted))
+
+
+def _is_fbx(path: Optional[Path]) -> bool:
+    """Return ``True`` when *path* points to an FBX file."""
+    return path is not None and path.suffix.lower() == ".fbx"
+
+
+def _prefer_rat_infos(infos: Tuple[TextureInfo, ...]) -> Tuple[TextureInfo, ...]:
+    """Prefer converted ``.rat`` textures over same-stem source images.
+
+    Args:
+        infos: Parsed texture infos from the texture folder.
+
+    Returns:
+        Texture infos with source images replaced by matching ``.rat`` files.
+    """
+    chosen = {}
+    order = []
+    for info in infos:
+        key = (info.path.parent.as_posix().lower(), _rat_preference_stem(info).lower())
+        if key not in chosen:
+            order.append(key)
+            chosen[key] = info
+            continue
+        current = chosen[key]
+        if _rat_rank(info) > _rat_rank(current):
+            chosen[key] = info
+    return tuple(chosen[key] for key in order)
+
+
+def _normalise_fbx_texture_infos(infos: Tuple[TextureInfo, ...]) -> Tuple[TextureInfo, ...]:
+    """Normalize FBX texture names so date tokens do not split materials.
+
+    Args:
+        infos: Parsed texture infos.
+
+    Returns:
+        Infos with 8-digit date/version tokens removed from ``raw_name``.
+    """
+    normalized: List[TextureInfo] = []
+    for info in infos:
+        raw = _strip_date_tokens(info.raw_name)
+        normalized.append(replace(info, raw_name=raw))
+    return tuple(normalized)
+
+
+def _strip_date_tokens(name: str) -> str:
+    """Remove standalone 8-digit date/version tokens from a texture stem."""
+    stripped = _DATE_TOKEN_RE.sub("", name)
+    stripped = re.sub(r"[_\-. ]{2,}", "_", stripped)
+    return stripped.strip("_-. ")
+
+
+def _rat_preference_stem(info: TextureInfo) -> str:
+    """Return a comparison stem that treats legacy ``.png.rat`` as ``.rat``."""
+    stem = info.stem
+    if info.extension == "rat":
+        inner_suffix = Path(stem).suffix.lower()
+        if inner_suffix in _TEXTURE_SOURCE_EXTS:
+            return Path(stem).stem
+    return stem
+
+
+def _rat_rank(info: TextureInfo) -> int:
+    """Rank texture variants, preferring clean converted ``.rat`` names."""
+    if info.extension != "rat":
+        return 0
+    inner_suffix = Path(info.stem).suffix.lower()
+    if inner_suffix in _TEXTURE_SOURCE_EXTS:
+        return 1
+    return 2

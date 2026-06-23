@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- LH Houdini Pipeline shelf. Auto-loaded from <HOUDINI_PATH>/toolbar/. -->
+<shelfDocument>
+  <toolshelf name="lh_pipeline" label="LH Pipeline">
+    <memberTool name="lh_project_manager"/>
+    <memberTool name="lh_lops_asset_builder"/>
+    <memberTool name="lh_tex_to_mtlx"/>
+    <memberTool name="lh_camera_manager"/>
+    <memberTool name="lh_cache_manager"/>
+    <memberTool name="lh_asset_ingest"/>
+    <memberTool name="lh_lookdev_builder"/>
+  </toolshelf>
+
+  <tool name="lh_project_manager" label="Project Mgr" icon="MISC_digital_asset">
+    <helpText><![CDATA[Create / manage Houdini project directory structures.]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.project_manager import launch
+launch()
+]]></script>
+  </tool>
+
+  <tool name="lh_lops_asset_builder" label="Asset Builder" icon="SOP_box">
+    <helpText><![CDATA[Build a USD component asset (geo + materials + output).]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.lops_asset_builder import launch
+launch()
+]]></script>
+  </tool>
+
+  <tool name="lh_tex_to_mtlx" label="Tex -> MtlX" icon="SHELF_material">
+    <helpText><![CDATA[Scan a texture folder and build MaterialX networks.]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.tex_to_mtlx import launch
+launch()
+]]></script>
+  </tool>
+
+  <tool name="lh_camera_manager" label="Camera Mgr" icon="OBJ_camera">
+    <helpText><![CDATA[Create / list / merge cameras + USD turntable + variants.]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.camera_manager import launch
+launch()
+]]></script>
+  </tool>
+
+  <tool name="lh_cache_manager" label="Cache Mgr" icon="SOP_filecache">
+    <helpText><![CDATA[Scan, inspect, and safely purge scene caches.]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.cache_manager import launch
+launch()
+]]></script>
+  </tool>
+
+  <tool name="lh_asset_ingest" label="Asset Ingest" icon="DATATYPES_file">
+    <helpText><![CDATA[Drag-and-drop / batch ingest FBX/OBJ -> USD components.]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.asset_ingest import launch
+launch()
+]]></script>
+  </tool>
+
+  <tool name="lh_lookdev_builder" label="Lookdev" icon="SHELF_light">
+    <helpText><![CDATA[One-click lookdev: asset + light rig + turntable + calibration.]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.lookdev_builder import launch
+launch()
+]]></script>
+  </tool>
+</shelfDocument>

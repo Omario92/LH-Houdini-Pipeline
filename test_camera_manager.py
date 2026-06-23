@@ -193,15 +193,96 @@ if _HAS_HOU:
         ok = service.create_camera_variants(cam_path, "lens", variants)
         assert ok
         
-        # Verify node existence
-        python_lop = hou.node("/stage/variants_test_var_cam_lens")
+        # Verify SINGLE author node (new behaviour)
+        python_lop = hou.node("/stage/test_var_cam_variants_author")
         assert python_lop is not None
         
         # Clean up
         hou.node(cam_path).destroy()
-        python_lop.destroy()
+        if hou.node("/stage/test_var_cam_variants_author"):
+            hou.node("/stage/test_var_cam_variants_author").destroy()
     check("create stage variants (lens)", _stage_variants)
 
+    def _delete_removes_variant_helpers():
+        import hou
+        from lh_houdini_pipeline.tools.camera_manager import service, CameraSpec, CameraContext, CameraVariantSpec, VariantSetSpec
+        spec = CameraSpec(name="test_del_cam", focal_length=50.0)
+        cam_path = service.create_camera(spec, context=CameraContext.STAGE, force=True)
+        service.create_camera_variant_author(
+            cam_path, [VariantSetSpec("lens", (CameraVariantSpec("wide", 24.0),))]
+        )
+        service.set_camera_variant_selection(cam_path + "_variants_author", {"lens": "wide"})
+        assert hou.node("/stage/test_del_cam_variants_author") is not None
+        # New cleanup delete must remove camera AND its helper LOPs.
+        assert service.delete_camera(cam_path)
+        assert hou.node(cam_path) is None
+        assert hou.node("/stage/test_del_cam_variants_author") is None
+        assert hou.node("/stage/test_del_cam_variants_author_select") is None
+    check("delete_camera removes orphan variant helper nodes", _delete_removes_variant_helpers)
+
+
+print("\n=== variant model + expand planner (pure) ===")
+def _variant_optional_focal():
+    from lh_houdini_pipeline.tools.camera_manager import CameraVariantSpec
+    v = CameraVariantSpec("front", tz=10.0, ry=90.0)   # no focal
+    assert v.focal_length is None
+    assert v.has_transform
+    assert v.transform_overrides() == {"tz": 10.0, "ry": 90.0}
+    lens = CameraVariantSpec("wide_24mm", 24.0)
+    assert not lens.has_transform and lens.transform_overrides() == {}
+check("CameraVariantSpec optional focal + transform_overrides", _variant_optional_focal)
+
+def _expand_non_combine():
+    from lh_houdini_pipeline.tools.camera_manager import (
+        CameraVariantSpec, VariantSetSpec, plan_expanded_cameras)
+    lens = VariantSetSpec("lens", (CameraVariantSpec("wide_24mm",24.0), CameraVariantSpec("tele_85mm",85.0)))
+    angle = VariantSetSpec("angle", (CameraVariantSpec("front", tz=10.0),))
+    specs = plan_expanded_cameras("cam1", [lens, angle])
+    names = [s.node_name for s in specs]
+    assert names == ["cam1_wide_24mm","cam1_tele_85mm","cam1_front"], names
+    assert specs[0].prim_path == "/cameras/cam1_wide_24mm"
+    assert specs[0].focal_length == 24.0 and specs[0].overrides == {}
+    assert specs[2].focal_length is None and specs[2].overrides == {"tz":10.0}
+check("plan_expanded_cameras non-combine", _expand_non_combine)
+
+def _expand_combine():
+    from lh_houdini_pipeline.tools.camera_manager import (
+        CameraVariantSpec, VariantSetSpec, plan_expanded_cameras)
+    lens = VariantSetSpec("lens", (CameraVariantSpec("wide_24mm",24.0), CameraVariantSpec("tele_85mm",85.0)))
+    angle = VariantSetSpec("angle", (CameraVariantSpec("front", tz=10.0), CameraVariantSpec("side", tx=10.0, ry=90.0)))
+    specs = plan_expanded_cameras("cam1", [lens, angle], combine=True)
+    names = [s.node_name for s in specs]
+    assert names == ["cam1_wide_24mm_front","cam1_wide_24mm_side","cam1_tele_85mm_front","cam1_tele_85mm_side"], names
+    # combined spec merges lens focal + angle transform
+    assert specs[1].focal_length == 24.0 and specs[1].overrides == {"tx":10.0,"ry":90.0}
+check("plan_expanded_cameras combine (lens x angle)", _expand_combine)
+
+print("\n=== usd_variants code generation (pure) ===")
+def _author_code():
+    from lh_houdini_pipeline.houdini import usd_variants as uv
+    d = {"lens": {"wide_24mm": uv.variant_to_data(24.0)},
+         "angle": {"front": uv.variant_to_data(None, tz=10.0)}}
+    code = uv.build_variant_author_code("/cameras/cam1", d)
+    assert "/cameras/cam1" in code
+    assert "AddVariantSet" in code and "GetVariantEditContext" in code
+    assert "spec['focal'] * SCALE" in code           # scaled focal, not /100 hardcode
+    assert "SCALE = 0.01" in code                     # verified Houdini mm/100
+    assert "ClearXformOpOrder" in code                # rebuild ops per variant
+    assert "'wide_24mm'" in code and "'front'" in code
+check("build_variant_author_code emits all sets + scaled focal", _author_code)
+
+def _variant_data_transform_flag():
+    from lh_houdini_pipeline.houdini import usd_variants as uv
+    assert uv.variant_to_data(24.0)["has_transform"] is False
+    d = uv.variant_to_data(None, tz=10.0)
+    assert d["has_transform"] is True and d["focal"] is None and d["tz"] == 10.0
+check("variant_to_data focal/transform normalisation", _variant_data_transform_flag)
+
+def _selection_code():
+    from lh_houdini_pipeline.houdini import usd_variants as uv
+    code = uv.build_variant_selection_code("/cameras/cam1", {"lens": "tele_85mm"})
+    assert "SetVariantSelection" in code and "tele_85mm" in code and "/cameras/cam1" in code
+check("build_variant_selection_code", _selection_code)
 
 print("\n=== summary ===")
 if errors:

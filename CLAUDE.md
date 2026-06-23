@@ -10,7 +10,7 @@
 Component-based Houdini pipeline framework. Design philosophy: build reusable
 "Lego brick" components first; compose them into tools later.
 
-**Workspace:** `E:\OneDrive\Documents\Claude\Projects\LH Houdini Pipeline\`
+**Workspace:** `F:\HOUDINI\LH-Houdini-Pipeline`
 **Package root:** `lh_houdini_pipeline/`
 
 ---
@@ -86,7 +86,7 @@ python test_smoke.py
 ### Verify import outside Houdini
 ```python
 import sys
-sys.path.insert(0, r"E:\OneDrive\Documents\Claude\Projects\LH Houdini Pipeline")
+sys.path.insert(0, r"F:\HOUDINI\LH-Houdini-Pipeline")
 import lh_houdini_pipeline
 ```
 
@@ -263,3 +263,55 @@ Khi viết code Houdini-specific:
 
 
 
+| 2026-06-22 | project_manager: added persistent JSON folder settings, Settings dialog presets, and selected-folder create/preview integration |
+| 2026-06-22 | VERIFIED with Houdini 21.0.631 hython: Project Manager settings import, PySide6 dialog, selected-folder plan, and dry-run |
+| 2026-06-22 | VERIFIED with live HoudiniMCP on localhost:9876: execute_code reloads Project Manager worktree and validates Settings dialog + selected folders |
+| 2026-06-22 | lops_asset_builder: fixed component material paths to /ASSET/materials, enabled material flags for Material Library filtering, and promoted untagged FBX textures to baseColor |
+| 2026-06-22 | VERIFIED with live HoudiniMCP: LOPs Asset Builder creates valid /ASSET/materials prim, material flag true, and component material assignment path correct |
+| 2026-06-22 | lops_asset_builder: grouped FBX date-stamped PBR textures into one material, fixed metallic detection, and replans after .rat conversion so materials use converted files |
+| 2026-06-22 | VERIFIED with live HoudiniMCP: texture_pbr base/metallic/normal/roughness maps build one material and all mtlximage nodes use .rat files |
+| 2026-06-22 | materialx.tx/lops_asset_builder: fixed imaketx output naming to drop source extensions (.png -> .rat, not .png.rat) and prefer clean .rat over legacy double-extension files |
+| 2026-06-22 | materialx.tx: RAW/data texture conversion is now pass-through (no --ocio/no -c) so normal/roughness/metalness RAT files preserve data values |
+| 2026-06-22 | materialx.tx: RAW/data imaketx commands now add -l 0 to disable automatic sRGB linearization for normal maps |
+| 2026-06-22 | materialx.rules: added TextureRole + COLOUR_CHANNELS + classify_channel()/get_imaketx_color_args() (single source of truth: colour vs data) |
+| 2026-06-22 | materialx.tx: MaketxPlanner.plan_info now classifies by TextureChannel (role) so normal/rough/metal/disp/mask are ALWAYS raw passthrough (-l 0), never colour-converted; plan_path gains optional role= (legacy colorspace path preserved) |
+| 2026-06-22 | test_materialx_tx.py: +3 assertions for role classification & data-map passthrough; all tx + smoke suites green |
+| 2026-06-22 | FIX(normal maps): imaketx -l 0 does NOT stop 8-bit PNG linearization (verified H21.0.631: mid 0.5 -> 0.214, double-converted -> 0.036 = dark). Data maps now use identity -c Raw Raw (preserves source values, idempotent). rules.get_imaketx_color_args + MaketxPlanner DATA branch updated |
+| 2026-06-22 | FIX(double-conversion): convert_textures_to_tx skips inputs already in target format (.rat) so colour maps are not re-linearized when a folder already holds converted files |
+| 2026-06-22 | VERIFIED live H21.0.631 via OpenImageIO: planner cmd '-c Raw Raw' on normal.png yields .rat avg [0.4999,0.4958,0.995] == source (was [0.0358,...]); tests updated, all suites green |
+| 2026-06-22 | tex_to_mtlx.core: scan_and_plan now collapses jpg/tx/rat variants per (folder,base,channel) preferring .rat > .tx > source (_prefer_converted_infos). Fixes post-conversion scan picking arbitrary/source variant; .mtlx now references .rat |
+| 2026-06-22 | VERIFIED fresh hython H21.0.631 on J:/.../MSMC_Blobs/Blob_Dots+Blob_Marble: 1 material, 3 textures, all channels resolve to .rat; +3 assertions in test_tex_to_mtlx.py, all suites green |
+| 2026-06-22 | tex_to_mtlx.core: scan_and_plan auto-recurses when a parent library folder has no textures directly but sub-folders do (auto_recurse=True default). Scanning J:/.../MSMC_Blobs now yields all 11 sub-folder materials (all .rat) without toggling Recursive; +2 assertions |
+| 2026-06-22 | houdini/usd_variants.py: pure code-gen for USD camera VariantSets (build_variant_author_code/selection_code, variant_to_data). VERIFIED H21.0.631: Houdini camera LOP authors focalLength as mm/100 (50mm->0.5), so HOUDINI_USD_FOCAL_SCALE=0.01 is correct (NOT a bug); variant focal stays consistent with base camera |
+| 2026-06-22 | camera_manager refactor: ONE {cam}_variants_author Python LOP authors ALL VariantSets (accumulates via userData JSON) instead of one node per set; +set_camera_variant_selection ({cam}_..._select), +expand_camera_variants_to_cameras (real per-variant cameras, combine=lens x angle), +get_camera_variant_sets/specs. core: CameraVariantSpec.focal optional + has_transform/transform_overrides + ExpandedCameraSpec + plan_expanded_cameras (pure) |
+| 2026-06-22 | camera_manager UI: 'Add Variants' button -> menu [Add USD Variants / Expand to Cameras / Set Active Variant]; angle variants are transform-only (focal None) so they don't clobber lens focal; +VariantSelectionDialog |
+| 2026-06-22 | VERIFIED live H21.0.631: add lens+angle separately -> single author node w/ both sets; selection tele_85mm->focal 0.85 + side translate (10,0,0); expand non-combine 4 cams + combine 4 lens x angle; +9 pure assertions in test_camera_manager.py; all suites green |
+| 2026-06-23 | camera_manager fix: delete_camera(with_helpers=True) now also destroys {cam}_variants_author + _select Python LOPs. They author the prim via OverridePrim, so leaving them orphaned kept a ghost camera prim + stale node data after delete |
+| 2026-06-23 | camera_manager UI: added Refresh button + showEvent auto-refresh + _refresh() on init so the Existing-cameras list re-syncs with the scene (covers external changes / deletes). +guarded hou test delete_removes_variant_helpers |
+| 2026-06-23 | Tier-0 upgrade (Rebelway gap-fill): core/profiling.py (Stopwatch + @timed/@timed_block + @profiled cProfile/snakeviz + mem_sample) [W05]; houdini/traversal.py (BFS/DFS descendants, find_by_type w/ recursiveGlob fast-path + BFS fallback, walk_inputs/outputs cycle-safe) [W01] |
+| 2026-06-23 | Tier-0: filled brick stubs -- houdini/parm.py (get/try_get/set/try_set/set_parms/press_button, ParmError), houdini/geometry.py (BBox frozen dataclass, bbox/point_count/prim_count/attribs/material_paths for ingestion), core/validators.py (version token/prim-path/frame-range + require_* raisers) |
+| 2026-06-23 | Tier-0: data-driven config realised -- lh_houdini_pipeline/config/defaults.yaml (paths/naming/dcc/render/texture/cache) + core.config.bootstrap_config() resolving defaults->$JOB/config.yaml->~/.lh_pipeline->LH_PIPELINE_* env |
+| 2026-06-23 | Added test_tier0.py (25 pure assertions); test_smoke.py still 30/30 green |
+| 2026-06-23 | VERIFIED live H21.0.631 via MCP: find_by_type(box) path, BFS count, walk_inputs dataflow (matpath->scaler->box), parm get/set scale=2.0 + try_set missing False, bbox.size (2,2,2)/diag 3.4641, point8/prim6, material_paths ['/mat/woodA'], @timed fires in-session |
+| 2026-06-23 | Tier-1 Scene Cache Manager (Rebelway W02/F): file/cache_utils.py pure model -- CacheFile/CacheSequence frozen dataclasses, compound-ext split (.bgeo.sc), version-in-base frame parse, scan_directory grouping, missing_frames gap detection, is_stale (age OR source-newer), human_size |
+| 2026-06-23 | Tier-1: tools/cache_manager core.py (CleanupPolicy/CleanupPlan/classify/plan_cleanup -- pure dry-run, EMPTY>STALE>INCOMPLETE>OK precedence) + service.py (discover_cache_dirs via houdini.traversal over /obj,/stage,/out cache nodes; scan_scene/scan_dirs; delete_paths trash-first w/ send2trash fallback + per-file try/except; open_in_explorer) |
+| 2026-06-23 | Tier-1: cache_manager ui.py (PySide6 dark-theme table, status colour tint, policy controls, Select Candidates, threaded delete + QProgressBar, confirm dialog w/ reclaimed bytes, context-menu + double-click open folder) + launch + __init__ surface |
+| 2026-06-23 | Added test_cache_manager.py (26 pure assertions: parsing/scan/gaps/staleness/policy/plan); test_smoke 30/30 + test_tier0 25/25 still green |
+| 2026-06-23 | VERIFIED live H21.0.631 via MCP: Geometry ROP sopoutput discovered, scan_scene smoke seq 1001-1005 gap=[1003], classify smoke=incomplete/junk=empty, candidates=[junk.vdb,smoke.bgeo.sc], CacheManagerUI builds under live PySide6 + table 2 rows |
+| 2026-06-23 | Tier-2 Asset Ingestion + Drag&Drop (Rebelway W04/W10): tools/asset_ingest core.py (pure) -- IngestItem, is_geometry_file, derive_asset_name (strip version/date noise -> clean id), find_texture_folder (sibling textures/tex/maps or flat layout), expand_inputs (folder->geo files), plan_ingest; composes lops_asset_builder.plan_asset (no re-impl of USD componentise) |
+| 2026-06-23 | Tier-2: asset_ingest service.py (ingest_items/ingest_paths -> lops_asset_builder.build_asset per item, per-item try/except isolates bad FBX, @timed; is_solaris_context guard) + IngestResult/IngestSummary |
+| 2026-06-23 | Tier-2: scripts/externaldragdrop.py -- Houdini OS drag-drop hook dropAccept(files) (+drop_accept alias), cheap geo pre-filter before hou import, Solaris-only guard, status feedback; self-adds repo root to sys.path. Install: put repo scripts/ on HOUDINI_PATH |
+| 2026-06-23 | Tier-2: asset_ingest ui.py (PySide6 window-level OS drop target, editable asset-name table, output-dir, recurse-tex, progress + per-row OK/FAIL tint; node ops on main thread) + launch + __init__ |
+| 2026-06-23 | Added test_asset_ingest.py (17 pure assertions incl. drag-drop handler import/reject paths); all suites green |
+| 2026-06-23 | VERIFIED live H21.0.631 via MCP: 'Hero Rock_v003.obj' -> asset 'Hero_Rock' (version/space stripped), ingest_paths built geo/mtl/assign/componentoutput, rootprim=/Hero_Rock, componentoutput cooks 0 errors, AssetIngestUI accepts dropped item |
+| 2026-06-23 | Tier-3 Lookdev super-tool (Rebelway W07-W10): houdini/usd.py filled -- stage_of + compute_world_bounds (WorldBounds frozen dataclass via UsdGeom.BBoxCache, default+render purposes) shared by rig/camera framing |
+| 2026-06-23 | Tier-3: lookdev/light_rig.py -- pure 3-point math (look_at_rotation atan2 yaw/pitch, three_point_rig key/fill/rim sized to max_dim, LightSpec/LightRigPlan) + hou build_light_rig (light::2.0 sphere lights chained onto asset stage, intensity/exposure via name-resolved parms, optional domelight HDRI) |
+| 2026-06-23 | Tier-3: tools/lookdev_builder -- ONE-CLICK super tool. core LookdevConfig (pure, step_count) + service.build_lookdev composing lops_asset_builder + lookdev.light_rig + camera_manager.create_turntable, per-stage try/except, @timed. ui (geo/tex/dome pickers, lights/turntable toggles, frames, staged progress) + launch + __init__. lookdev/__init__ now exports light_rig |
+| 2026-06-23 | Added test_lookdev.py (16 pure assertions: look-at math/3-point ratios/config steps); all 5 suites green |
+| 2026-06-23 | VERIFIED live H21.0.631 via MCP: build_lookdev('ChairHero_v002.obj') -> asset ChairHero + rig_key/fill/rim (sphere lights, key framed to bounds @ (3.52,3.08,3.96) = max_dim 2 x 2.2 x offset) + turntable_cam (24 ry keys, playback [1,24]), componentoutput cooks 0 errors, LookdevBuilderUI builds under live PySide6 |
+| 2026-06-23 | Tier-3 final (Week 10): lookdev/calibration.py -- pure MACBETH_SRGB 24-patch ColorChecker + srgb_to_linear + chart_layout (6x4 centered grid) + CalibrationPlan(JSON round-trip); USD authoring author_plates() writes chrome sphere (metallic1/rough.04), 18% grey sphere, 24 displayColor+UsdPreviewSurface patches on editableStage; build_calibration() creates pythonscript LOP w/ userData JSON params + sys.path bootstrap snippet, chains onto lookdev stage |
+| 2026-06-23 | Tier-3: lookdev_builder gains with_calibration (LookdevConfig+step_count, service stage chained onto last light, UI checkbox); lookdev/__init__ exports calibration; test_lookdev.py +8 assertions (24 total) |
+| 2026-06-23 | VERIFIED live H21.0.631 via MCP: build_calibration pythonscript LOP cooks 0 errors, authors /lookdev/calibration chrome+grey Spheres (r=0.5) + 24 macbeth patches (each Cube+UsdPreviewSurface), white patch#18 linear displayColor (0.896,0.896,0.888)=sRGB243 linearized, grey material bound; full build_lookdev(with_calibration) ok, calibration_node=/stage/calibration_plates |
+| 2026-06-23 | Packaging: packages/lh_pipeline.json (HOUDINI_PATH+PYTHONPATH=repo root, enables scripts/externaldragdrop.py + toolbar/) + toolbar/lh_pipeline.shelf (7 tools: project_manager/lops_asset_builder/tex_to_mtlx/camera_manager/cache_manager/asset_ingest/lookdev_builder). Installed live to $HOUDINI_USER_PREF_DIR/packages/lh_pipeline.json (restart to activate) |
+| 2026-06-23 | Refactor (perf/traversal): @timed added to tex_to_mtlx.build_plans/convert_textures_to_tx, lops_asset_builder.build_asset, camera_manager.list_cameras/merge_cameras/create_turntable/get_camera_frames; camera_manager.list_cameras now uses houdini.traversal.find_by_type (recursiveGlob fast-path) instead of hand-rolled allSubChildren loop |
+| 2026-06-23 | VERIFIED live H21.0.631: refactored list_cameras returns OBJ cam via traversal; @timed logs '[perf] camera_manager.list_cameras took 0.00 ms'; all 3 services import hou-lazy clean; package+shelf files valid; 5 test suites green |

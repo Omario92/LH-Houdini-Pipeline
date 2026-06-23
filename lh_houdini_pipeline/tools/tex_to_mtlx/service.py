@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from lh_houdini_pipeline.core.logger import get_logger
+from lh_houdini_pipeline.core.profiling import timed
 from lh_houdini_pipeline.houdini import lop as _lop
 from lh_houdini_pipeline.materialx.builder import (
     BuildResult,
@@ -99,6 +100,7 @@ def resolve_parent(prefer_path: Optional[str] = None) -> Any:
     return mat
 
 
+@timed("tex_to_mtlx.build_plans")
 def build_plans(
     plans: List[MaterialBuildPlan],
     prefer_path: Optional[str] = None,
@@ -128,6 +130,7 @@ def build_plans(
     return results
 
 
+@timed("tex_to_mtlx.convert_textures_to_tx")
 def convert_textures_to_tx(
     infos,
     out_dir=None,
@@ -148,9 +151,29 @@ def convert_textures_to_tx(
 
     Returns:
         One :class:`TxResult` per input texture.
+
+    Note:
+        Inputs whose extension already equals the target format (e.g. a ``.rat``
+        when converting to ``RAT``) are skipped.  Re-running ``imaketx`` on an
+        already-converted file would otherwise apply the colour transform a
+        second time -- which double-linearises colour maps and darkens them.
     """
+    target_ext = tx_format.extension.lower()
+    source_infos = []
+    skipped = 0
+    for info in infos:
+        if (info.extension or "").lower() == target_ext:
+            skipped += 1
+            continue
+        source_infos.append(info)
+    if skipped:
+        _log.info(
+            "imaketx: skipped " + str(skipped)
+            + " already-" + target_ext + " texture(s) to avoid double conversion."
+        )
+
     planner = MaketxPlanner(tx_format=tx_format)
-    specs = planner.plan_many(list(infos), out_dir=out_dir)
+    specs = planner.plan_many(source_infos, out_dir=out_dir)
     converter = MaketxConverter(dry_run=dry_run)
     results = converter.convert_many(specs, on_each=on_each)
     ok = sum(1 for r in results if r.success)

@@ -68,11 +68,30 @@ def _color_gets_colorconvert():
     assert spec.output.name == "hero_basecolor.rat", spec.output.name
 check("sRGB texture -> colorconvert + .rat output", _color_gets_colorconvert)
 
-def _raw_no_colorconvert():
+def _raw_passthrough():
     spec = _planner.plan_path("/tex/hero_rough.exr", ColorSpace.RAW)
-    assert not spec.does_colorconvert
-    assert spec.use_ocio
-check("raw texture -> no -c, uses --ocio", _raw_no_colorconvert)
+    # data maps use identity -c Raw Raw (value-preserving, idempotent)
+    assert spec.does_colorconvert
+    assert spec.src_colorspace == "Raw" and spec.dst_colorspace == "Raw"
+    assert not spec.use_ocio
+check("raw texture -> identity -c Raw Raw passthrough", _raw_passthrough)
+
+def _png_output_drops_source_extension():
+    spec = _planner.plan_path("/tex/hero_normal.png", ColorSpace.RAW)
+    assert spec.output.name == "hero_normal.rat", spec.output.name
+check("png texture -> .rat output, not .png.rat", _png_output_drops_source_extension)
+
+def _normal_info_is_passthrough():
+    parser = TextureParser()
+    info = parser.parse("/tex/robot_Normal.png")
+    spec = _planner.plan_info(info)
+    cmd = spec.build_command("imaketx")
+    assert spec.output.name == "robot_Normal.rat", spec.output.name
+    assert "--ocio" not in cmd, cmd
+    i = cmd.index("-c")
+    assert cmd[i + 1] == "Raw" and cmd[i + 2] == "Raw", cmd
+    assert "-l" not in cmd, cmd
+check("normal map conversion -> -c Raw Raw (no linearize)", _normal_info_is_passthrough)
 
 def _out_dir_override():
     spec = _planner.plan_path("/tex/a_normal.exr", ColorSpace.RAW, out_dir="/tx")
@@ -106,13 +125,56 @@ def _cmd_color():
     assert "--ocio" not in cmd  # -c and --ocio are mutually exclusive here
 check("color command: infile/outfile + -c pair", _cmd_color)
 
-def _cmd_raw_ocio():
+def _cmd_raw_passthrough():
     spec = _planner.plan_path("/tex/d_rough.exr", ColorSpace.RAW)
     cmd = spec.build_command("imaketx")
-    assert "--ocio" in cmd
-    assert "-c" not in cmd
+    assert "--ocio" not in cmd
+    i = cmd.index("-c")
+    assert cmd[i + 1] == "Raw" and cmd[i + 2] == "Raw", cmd
+    assert "-l" not in cmd, cmd
     assert "--newer" in cmd
-check("raw command: --ocio, no -c, --newer", _cmd_raw_ocio)
+check("raw command: identity -c Raw Raw, no -l, --newer", _cmd_raw_passthrough)
+
+
+print("\n=== role classification (colour vs data) ===")
+
+from lh_houdini_pipeline.materialx.rules import (
+    TextureRole, classify_channel, get_imaketx_color_args,
+)
+from lh_houdini_pipeline.file.texture_parser import TextureChannel
+
+
+def _classify_channels():
+    assert classify_channel(TextureChannel.BASE_COLOR) is TextureRole.COLOUR
+    assert classify_channel(TextureChannel.EMISSIVE) is TextureRole.COLOUR
+    assert classify_channel(TextureChannel.NORMAL) is TextureRole.DATA
+    assert classify_channel(TextureChannel.ROUGHNESS) is TextureRole.DATA
+    assert classify_channel(TextureChannel.METALNESS) is TextureRole.DATA
+    assert classify_channel(TextureChannel.DISPLACEMENT) is TextureRole.DATA
+    # Unknown must default to DATA so it is never colour-converted.
+    assert classify_channel(TextureChannel.UNKNOWN) is TextureRole.DATA
+check("classify_channel: colour vs data", _classify_channels)
+
+
+def _helper_imaketx_args():
+    assert get_imaketx_color_args("albedo") == ["-c", "srgb_texture", "scene_linear"]
+    assert get_imaketx_color_args("base_color") == ["-c", "srgb_texture", "scene_linear"]
+    assert get_imaketx_color_args("normal") == ["-c", "Raw", "Raw"]
+    assert get_imaketx_color_args("roughness") == ["-c", "Raw", "Raw"]
+    assert get_imaketx_color_args(TextureChannel.NORMAL) == ["-c", "Raw", "Raw"]
+    assert get_imaketx_color_args(TextureChannel.BASE_COLOR) == ["-c", "srgb_texture", "scene_linear"]
+check("get_imaketx_color_args: imaketx-correct flags", _helper_imaketx_args)
+
+
+def _data_channels_raw_passthrough():
+    parser = TextureParser()
+    planner = MaketxPlanner()
+    for fname in ("w_Normal.png", "w_Roughness.png", "w_Metalness.png", "w_Height.png"):
+        cmd = planner.plan_info(parser.parse("/tex/" + fname)).build_command("imaketx")
+        assert "--ocio" not in cmd and "-l" not in cmd, (fname, cmd)
+        i = cmd.index("-c")
+        assert cmd[i + 1] == "Raw" and cmd[i + 2] == "Raw", (fname, cmd)
+check("data maps (normal/rough/metal/height) -> -c Raw Raw", _data_channels_raw_passthrough)
 
 
 print("\n=== converter (dry-run, no process) ===")

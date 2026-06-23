@@ -26,6 +26,7 @@ from typing import List, Optional
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.project_manager import core as _core
 from lh_houdini_pipeline.tools.project_manager import service as _service
+from lh_houdini_pipeline.tools.project_manager import settings as _settings
 
 _log = get_logger(__name__)
 
@@ -50,6 +51,7 @@ class ProjectController(QtCore.QObject):
 
     def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
         super().__init__(parent)
+        self._settings = _settings.load_settings()
 
     # -- helpers --------------------------------------------------------
 
@@ -66,9 +68,59 @@ class ProjectController(QtCore.QObject):
     def _template(self, default_structure: bool):
         """Pick the folder template based on the 'default structure' toggle."""
         if default_structure:
-            return _core.DEFAULT_TEMPLATE
+            return _core.ProjectTemplate(
+                name="user",
+                project_folders=self._settings.project_folders,
+            )
         # Minimal: project root + assets/shots only, no studio sub-folders.
         return _core.ProjectTemplate(name="minimal", project_folders=())
+
+    def settings(self) -> _settings.ProjectManagerSettings:
+        """Return the currently loaded Project Manager settings.
+
+        Returns:
+            Settings used by subsequent preview/create operations.
+        """
+        return self._settings
+
+    def reload_settings(self) -> _settings.ProjectManagerSettings:
+        """Reload persistent settings from disk.
+
+        Returns:
+            Fresh settings used by subsequent preview/create operations.
+        """
+        self._settings = _settings.load_settings()
+        self.statusChanged.emit(
+            "Project folders: " + str(len(self._settings.project_folders)) + " selected.",
+            "info",
+        )
+        return self._settings
+
+    def save_settings(self, folders: List[str]) -> _settings.ProjectManagerSettings:
+        """Persist selected project folders and update this controller.
+
+        Args:
+            folders: Folder paths selected by the Settings dialog.
+
+        Returns:
+            Settings saved to disk and activated for future plans.
+        """
+        self._settings = _settings.ProjectManagerSettings(
+            project_folders=_settings.validate_folders(folders),
+        )
+        path = _settings.save_settings(self._settings)
+        self.statusChanged.emit("Settings saved: " + str(path), "done")
+        self.logMessage.emit("Settings -> " + str(path))
+        return self._settings
+
+    def reset_settings(self) -> _settings.ProjectManagerSettings:
+        """Reset persistent settings to the full default folder set.
+
+        Returns:
+            Reset settings saved to disk and activated for future plans.
+        """
+        _settings.reset_settings()
+        return self.reload_settings()
 
     def build_plan(
         self,

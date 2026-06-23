@@ -39,3 +39,4 @@ Khi viết code Houdini-specific:
 - Không hardcode input index nếu có thể dùng `inputNames()`.
 - Nếu API khác version, viết fallback hoặc báo lỗi rõ.
 - Core/file layer không được import `hou`.
+@CLAUDE.md

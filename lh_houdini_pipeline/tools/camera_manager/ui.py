@@ -85,6 +85,9 @@ class CameraManagerWidget(QtWidgets.QWidget):
         layout.addWidget(self._list, 1)
 
         ops_row = QtWidgets.QHBoxLayout()
+        self._refresh_btn = QtWidgets.QPushButton("Refresh")
+        self._refresh_btn.setToolTip("Re-sync the list with the cameras currently in the scene.")
+        self._refresh_btn.clicked.connect(self._refresh)
         self._delete_btn = QtWidgets.QPushButton("Delete Selected")
         self._delete_btn.clicked.connect(self._on_delete)
         self._sync_btn = QtWidgets.QPushButton("Sync Playbar")
@@ -97,9 +100,22 @@ class CameraManagerWidget(QtWidgets.QWidget):
         self._export_btn = QtWidgets.QPushButton("Export Selected...")
         self._export_btn.setToolTip("Export the selected camera to USD, Alembic, or Nuke format.")
         self._export_btn.clicked.connect(self._on_export)
-        self._variants_btn = QtWidgets.QPushButton("Add Variants...")
-        self._variants_btn.setToolTip("Add focal length or angle VariantSets to a selected LOP camera.")
-        self._variants_btn.clicked.connect(self._on_variants)
+        # Variants menu: USD VariantSet authoring vs expanded real cameras.
+        self._variants_btn = QtWidgets.QToolButton()
+        self._variants_btn.setText("Variants")
+        self._variants_btn.setToolTip(
+            "USD VariantSets (one prim, many opinions) or expand to real cameras."
+        )
+        self._variants_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        _vmenu = QtWidgets.QMenu(self._variants_btn)
+        _act_usd = _vmenu.addAction("Add USD Variants...")
+        _act_usd.triggered.connect(self._on_add_usd_variants)
+        _act_expand = _vmenu.addAction("Expand to Cameras...")
+        _act_expand.triggered.connect(self._on_expand_cameras)
+        _act_select = _vmenu.addAction("Set Active Variant...")
+        _act_select.triggered.connect(self._on_set_active_variant)
+        self._variants_btn.setMenu(_vmenu)
+        ops_row.addWidget(self._refresh_btn)
         ops_row.addWidget(self._delete_btn)
         ops_row.addWidget(self._sync_btn)
         ops_row.addWidget(self._merge_btn)
@@ -114,6 +130,15 @@ class CameraManagerWidget(QtWidgets.QWidget):
 
         _style.apply(self)
         self.resize(440, 420)
+        self._refresh()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """Re-sync the camera list each time the panel is shown."""
+        super().showEvent(event)
+        try:
+            self._refresh()
+        except Exception:  # noqa: BLE001
+            _log.debug("showEvent refresh skipped")
 
     # -- handlers -------------------------------------------------------
 
@@ -277,35 +302,101 @@ class CameraManagerWidget(QtWidgets.QWidget):
                 self._set_status("Export failed: " + str(exc), error=True)
                 _log.exception("Camera export failed")
 
-    def _on_variants(self) -> None:
-        """Create camera VariantSets on the selected LOP camera."""
+    def _selected_stage_camera(self) -> Optional[str]:
+        """Return the selected /stage camera path, or None (with status set)."""
         paths = self._selected_paths()
         if not paths:
-            self._set_status("Select a stage camera to add variants to.", error=True)
-            return
-        
+            self._set_status("Select a stage camera first.", error=True)
+            return None
         camera_path = paths[0]
         if not camera_path.startswith("/stage"):
             self._set_status("Variants require a STAGE (USD) camera node.", error=True)
+            return None
+        return camera_path
+
+    def _on_add_usd_variants(self) -> None:
+        """Author USD VariantSet(s) on the selected camera (one author node)."""
+        camera_path = self._selected_stage_camera()
+        if camera_path is None:
             return
-            
         dialog = CameraVariantsDialog(camera_path, self)
         exec_func = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
-        if exec_func() == QtWidgets.QDialog.Accepted:
-            vset_name, variants = dialog.get_variants()
-            if not variants:
-                self._set_status("No variants selected.", error=True)
+        if exec_func() != QtWidgets.QDialog.Accepted:
+            return
+        sets = dialog.get_variant_sets()
+        if not sets:
+            self._set_status("No variants selected.", error=True)
+            return
+        try:
+            node = _service.create_camera_variant_author(camera_path, sets)
+            if node:
+                names = ", ".join(vs.name for vs in sets)
+                self._set_status("Authored USD VariantSet(s) [" + names + "] on " + camera_path)
+            else:
+                self._set_status("Failed to author variants (see log).", error=True)
+        except Exception as exc:  # noqa: BLE001
+            self._set_status("Failed: " + str(exc), error=True)
+            _log.exception("USD variant authoring failed")
+
+    def _on_expand_cameras(self) -> None:
+        """Expand variants into real camera LOP nodes (artist-friendly)."""
+        camera_path = self._selected_stage_camera()
+        if camera_path is None:
+            return
+        # Reuse any already-authored USD variants; else gather via the dialog.
+        sets = _service.get_camera_variant_specs(camera_path)
+        if not sets:
+            dialog = CameraVariantsDialog(camera_path, self)
+            exec_func = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
+            if exec_func() != QtWidgets.QDialog.Accepted:
                 return
-            
-            try:
-                ok = _service.create_camera_variants(camera_path, vset_name, variants)
-                if ok:
-                    self._set_status("Added VariantSet '" + vset_name + "' to " + camera_path)
-                else:
-                    self._set_status("Failed to create variants (see log).", error=True)
-            except Exception as exc:  # noqa: BLE001
-                self._set_status("Failed: " + str(exc), error=True)
-                _log.exception("Camera variants creation failed")
+            sets = dialog.get_variant_sets()
+        if not sets:
+            self._set_status("No variants to expand.", error=True)
+            return
+        combine = False
+        if len(sets) > 1:
+            reply = QtWidgets.QMessageBox.question(
+                self, "Combine variants?",
+                "Create every lens x angle combination?\n"
+                "Yes = combinations, No = one camera per variant.",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            )
+            combine = reply == QtWidgets.QMessageBox.Yes
+        try:
+            created = _service.expand_camera_variants_to_cameras(
+                camera_path, sets, combine=combine
+            )
+            self._set_status("Expanded " + str(len(created)) + " camera(s).")
+            self._refresh()
+        except Exception as exc:  # noqa: BLE001
+            self._set_status("Failed: " + str(exc), error=True)
+            _log.exception("Camera expand failed")
+
+    def _on_set_active_variant(self) -> None:
+        """Pick the active variant per set for preview."""
+        camera_path = self._selected_stage_camera()
+        if camera_path is None:
+            return
+        sets = _service.get_camera_variant_sets(camera_path)
+        if not sets:
+            self._set_status("No USD variants authored on this camera yet.", error=True)
+            return
+        dialog = VariantSelectionDialog(sets, self)
+        exec_func = getattr(dialog, "exec", None) or getattr(dialog, "exec_")
+        if exec_func() != QtWidgets.QDialog.Accepted:
+            return
+        selections = dialog.get_selections()
+        author_path = camera_path + "_variants_author"
+        try:
+            ok = _service.set_camera_variant_selection(author_path, selections)
+            if ok:
+                self._set_status("Active variant: " + repr(selections))
+            else:
+                self._set_status("Failed to set selection (see log).", error=True)
+        except Exception as exc:  # noqa: BLE001
+            self._set_status("Failed: " + str(exc), error=True)
+            _log.exception("Variant selection failed")
 
     def _set_status(self, message: str, error: bool = False) -> None:
         """Update the status label (red on error)."""
@@ -487,11 +578,17 @@ class CameraVariantsDialog(QtWidgets.QDialog):
         self._lens_group.setVisible(is_lens)
         self._angle_group.setVisible(not is_lens)
         
-    def get_variants(self) -> Tuple[str, list]:
+    def get_variant_sets(self) -> list:
+        """Return the chosen variants as a list of one ``VariantSetSpec``.
+
+        Lens variants override focal length only; angle variants are
+        transform-only (focal ``None``) so selecting an angle does not clobber
+        the active lens focal length.
+        """
         vset_name = self._vset_name.text().strip() or "variants"
         vtype = self._vset_type.currentData()
         variants = []
-        
+
         if vtype == "lens":
             if self._wide_cb.isChecked():
                 variants.append(_core.CameraVariantSpec("wide_24mm", 24.0))
@@ -500,17 +597,50 @@ class CameraVariantsDialog(QtWidgets.QDialog):
             if self._tight_cb.isChecked():
                 variants.append(_core.CameraVariantSpec("tight_85mm", 85.0))
         else:
-            # Angles
+            # Angles: transform-only (focal_length left as None).
             if self._front_cb.isChecked():
-                variants.append(_core.CameraVariantSpec("front", 50.0, tx=0.0, ty=0.0, tz=10.0, rx=0.0, ry=0.0, rz=0.0))
+                variants.append(_core.CameraVariantSpec("front", tz=10.0))
             if self._side_cb.isChecked():
-                variants.append(_core.CameraVariantSpec("side", 50.0, tx=10.0, ty=0.0, tz=0.0, rx=0.0, ry=90.0, rz=0.0))
+                variants.append(_core.CameraVariantSpec("side", tx=10.0, ry=90.0))
             if self._three_quarter_cb.isChecked():
-                variants.append(_core.CameraVariantSpec("three_quarter", 50.0, tx=7.07, ty=0.0, tz=7.07, rx=0.0, ry=45.0, rz=0.0))
+                variants.append(_core.CameraVariantSpec("three_quarter", tx=7.07, tz=7.07, ry=45.0))
             if self._top_cb.isChecked():
-                variants.append(_core.CameraVariantSpec("top", 50.0, tx=0.0, ty=10.0, tz=0.0, rx=-90.0, ry=0.0, rz=0.0))
-                
-        return vset_name, variants
+                variants.append(_core.CameraVariantSpec("top", ty=10.0, rx=-90.0))
+
+        if not variants:
+            return []
+        return [_core.VariantSetSpec(vset_name, tuple(variants))]
+
+
+class VariantSelectionDialog(QtWidgets.QDialog):
+    """Pick the active variant for each authored VariantSet (for preview)."""
+
+    def __init__(self, sets: dict, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Set Active Variant")
+        layout = QtWidgets.QVBoxLayout(self)
+        form = QtWidgets.QFormLayout()
+        self._combos = {}
+        for set_name, variant_names in sets.items():
+            combo = QtWidgets.QComboBox()
+            for name in variant_names:
+                combo.addItem(name, name)
+            self._combos[set_name] = combo
+            form.addRow(set_name + ":", combo)
+        layout.addLayout(form)
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            QtCore.Qt.Horizontal, self,
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+        _style.apply(self)
+        self.resize(300, 140)
+
+    def get_selections(self) -> dict:
+        """Return ``{set_name: chosen_variant_name}``."""
+        return {name: combo.currentData() for name, combo in self._combos.items()}
 
 
 def launch(parent: Optional[object] = None) -> "CameraManagerWidget":

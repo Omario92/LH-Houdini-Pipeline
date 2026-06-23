@@ -455,18 +455,35 @@ class CameraVariantSpec:
 
     Attributes:
         name:         Variant name (e.g. 'wide_35mm' or 'front_angle').
-        focal_length: Focal length in millimetres.
+        focal_length: Focal length in millimetres, or ``None`` to leave the
+                      camera's focal length untouched (transform-only variants).
         tx, ty, tz:   Optional transform position overrides.
         rx, ry, rz:   Optional transform rotation (Euler XYZ) overrides.
     """
     name:         str
-    focal_length: float
+    focal_length: Optional[float] = None
     tx:           Optional[float] = None
     ty:           Optional[float] = None
     tz:           Optional[float] = None
     rx:           Optional[float] = None
     ry:           Optional[float] = None
     rz:           Optional[float] = None
+
+    @property
+    def has_transform(self) -> bool:
+        """``True`` if any translate/rotate override is set."""
+        return any(
+            v is not None
+            for v in (self.tx, self.ty, self.tz, self.rx, self.ry, self.rz)
+        )
+
+    def transform_overrides(self) -> Dict[str, float]:
+        """Return only the transform parms that are explicitly overridden."""
+        pairs = {
+            "tx": self.tx, "ty": self.ty, "tz": self.tz,
+            "rx": self.rx, "ry": self.ry, "rz": self.rz,
+        }
+        return {k: float(v) for k, v in pairs.items() if v is not None}
 
 
 @dataclass(frozen=True)
@@ -479,5 +496,92 @@ class VariantSetSpec:
     """
     name:     str
     variants: Tuple[CameraVariantSpec, ...]
+
+
+@dataclass(frozen=True)
+class ExpandedCameraSpec:
+    """A real-camera plan derived from one (or a combination of) variant(s).
+
+    Used by the *Expand to Cameras* mode: each spec becomes a real ``camera``
+    LOP whose base parms are copied from the source camera and then overridden.
+
+    Attributes:
+        node_name:    Node / leaf-prim name (e.g. ``cam1_wide_24mm``).
+        prim_path:    Full USD prim path (e.g. ``/cameras/cam1_wide_24mm``).
+        focal_length: Focal length override in mm, or ``None`` to inherit.
+        overrides:    Transform parm overrides (subset of tx..rz), in mm/deg.
+    """
+    node_name:    str
+    prim_path:    str
+    focal_length: Optional[float]
+    overrides:    Dict[str, float]
+
+
+def plan_expanded_cameras(
+    source_name: str,
+    variant_sets: List[VariantSetSpec],
+    combine: bool = False,
+    parent_path: str = "/cameras",
+) -> List[ExpandedCameraSpec]:
+    """Plan real camera nodes from variant sets (pure -- no ``hou``).
+
+    Args:
+        source_name:  Base camera node name (e.g. ``cam1``).
+        variant_sets: The VariantSets to expand.
+        combine:      If ``False`` (default) emit one camera per variant across
+                      all sets.  If ``True`` emit the cartesian product of the
+                      sets (e.g. lens x angle), merging each chosen variant's
+                      overrides.
+        parent_path:  USD parent path for the new camera prims.
+
+    Returns:
+        A list of :class:`ExpandedCameraSpec`, deterministic in order.
+    """
+    parent = parent_path.rstrip("/")
+
+    def _make(name: str, focal: Optional[float], overrides: Dict[str, float]) -> ExpandedCameraSpec:
+        node_name = _sanitise(source_name + "_" + name)
+        return ExpandedCameraSpec(
+            node_name=node_name,
+            prim_path=parent + "/" + node_name,
+            focal_length=focal,
+            overrides=overrides,
+        )
+
+    specs: List[ExpandedCameraSpec] = []
+
+    if not combine:
+        # One camera per variant, flattened across every set.
+        for vset in variant_sets:
+            for var in vset.variants:
+                specs.append(_make(var.name, var.focal_length, var.transform_overrides()))
+        return specs
+
+    # Cartesian product across sets; later sets win on field conflicts.
+    non_empty = [vs for vs in variant_sets if vs.variants]
+    if not non_empty:
+        return specs
+
+    combos: List[Tuple[CameraVariantSpec, ...]] = [()]
+    for vset in non_empty:
+        combos = [combo + (var,) for combo in combos for var in vset.variants]
+
+    for combo in combos:
+        name = "_".join(v.name for v in combo)
+        focal: Optional[float] = None
+        overrides: Dict[str, float] = {}
+        for var in combo:
+            if var.focal_length is not None:
+                focal = var.focal_length
+            overrides.update(var.transform_overrides())
+        specs.append(_make(name, focal, overrides))
+    return specs
+
+
+def _sanitise(name: str) -> str:
+    """Return a USD/Houdini-safe node name (alnum + underscore)."""
+    import re
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", name).strip("_")
+    return cleaned or "camera"
 
 
