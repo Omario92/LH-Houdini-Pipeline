@@ -14,6 +14,8 @@
 - Added USD Camera Variants feature (VariantSets for focal lengths and angle transforms) to the Camera Manager.
 - Added programmatic HDA packaging module (HDA creation, Python HDA modules, event scripts, dynamic ParmTemplateGroup) and test suite.
 - Redesigned the LOPs Asset Builder UI with Drag & Drop support, collapsible advanced options (Simulation Proxy/Viewport Proxy Quality), color-coded logging panel, and threaded texture conversion.
+- Bootstrapped Houdini AI Assistant (Phase 1-4): OOP folder tree, async streaming client, scene context inspector, markdown chat UI, main-thread HOM tool execution, and modal Action Approval dialog.
+- Completed Phase 5: Upgraded programmatic HDA scaffolding tool with parameter template conversions, dynamic PythonModule/OnCreated event script packaging, expanded HDA Architect system prompts, and wrote comprehensive unit tests.
 ---
 
 ## Houdini Reference & Rules

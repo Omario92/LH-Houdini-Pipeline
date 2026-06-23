@@ -8,6 +8,7 @@ and Python script runs.
 from __future__ import annotations
 
 import io
+import os
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -221,7 +222,7 @@ class RunPythonSnippetTool(AITool):
 
 
 class GenerateHdaScaffoldTool(AITool):
-    """Tool to scaffold a basic Houdini Digital Asset network setup."""
+    """Tool to scaffold a basic Houdini Digital Asset network setup and compile HDA definitions."""
 
     @property
     def name(self) -> str:
@@ -229,7 +230,10 @@ class GenerateHdaScaffoldTool(AITool):
 
     @property
     def description(self) -> str:
-        return "Scaffold a new Houdini Digital Asset node network structure first, ready to be wrapped in an HDA."
+        return (
+            "Create a new subnet-like node, package it into an HDA library file on disk, "
+            "promote custom parameter templates, and inject PythonModule or Event Scripts."
+        )
 
     @property
     def schema(self) -> Dict[str, Any]:
@@ -239,46 +243,190 @@ class GenerateHdaScaffoldTool(AITool):
             "properties": {
                 "parent_path": {
                     "type": "string",
-                    "description": "Parent network path (e.g., '/obj' or '/stage')."
+                    "description": "Absolute path to parent network (e.g., '/obj' or '/stage')."
                 },
                 "node_type": {
                     "type": "string",
-                    "description": "Base node type for HDA (e.g., 'subnet' or 'geo')."
+                    "description": "Subnet-like node type to package (e.g., 'subnet', 'geo', 'materiallibrary')."
                 },
                 "hda_name": {
                     "type": "string",
-                    "description": "Unique identifier name for the HDA."
+                    "description": "Unique node type name for the HDA (e.g., 'sop_terrain_gen')."
                 },
                 "hda_label": {
                     "type": "string",
-                    "description": "Optional human-readable label."
+                    "description": "User-facing label for the HDA."
+                },
+                "hda_file_path": {
+                    "type": "string",
+                    "description": "Optional absolute path to write the .hda file. Defaults to $HIP/otls/name.hda."
+                },
+                "python_module": {
+                    "type": "string",
+                    "description": "Optional Python script to package inside the HDA's 'PythonModule' section."
+                },
+                "on_created": {
+                    "type": "string",
+                    "description": "Optional Python script to package inside the HDA's 'OnCreated' event section."
+                },
+                "parameters": {
+                    "type": "array",
+                    "description": "List of parameter templates to promote and lay out on the HDA interface.",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "type"],
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Unique variable name for the parameter."
+                            },
+                            "label": {
+                                "type": "string",
+                                "description": "Human-readable label."
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": ["float", "int", "string", "toggle", "button", "file"],
+                                "description": "Parameter data type."
+                            },
+                            "default": {
+                                "type": "string",
+                                "description": "Default starting value."
+                            },
+                            "min_range": {
+                                "type": "number",
+                                "description": "Slider minimum limit."
+                            },
+                            "max_range": {
+                                "type": "number",
+                                "description": "Slider maximum limit."
+                            },
+                            "callback_script": {
+                                "type": "string",
+                                "description": "Python snippet to run on change/click (e.g., 'hou.phm().my_callback(kwargs[\"node\"])')."
+                            },
+                            "help_text": {
+                                "type": "string",
+                                "description": "Help tooltip text."
+                            }
+                        }
+                    }
                 }
             }
         }
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         import hou
+        from lh_houdini_pipeline.houdini.hda import (
+            create_hda_from_subnet,
+            set_hda_python_module,
+            set_hda_event_script,
+            set_hda_parm_template_group,
+            save_and_reload_hda,
+        )
+
         parent_path = arguments["parent_path"]
         node_type = arguments["node_type"]
         hda_name = arguments["hda_name"]
         hda_label = arguments.get("hda_label", hda_name)
+        hda_file_path = arguments.get("hda_file_path")
+        python_module_code = arguments.get("python_module")
+        on_created_code = arguments.get("on_created")
+        parameters_data = arguments.get("parameters", [])
+
+        # 1. Resolve HDA path
+        if not hda_file_path:
+            hip = hou.getenv("HIP", "")
+            otls_dir = os.path.join(hip, "otls")
+            hda_file_path = os.path.join(otls_dir, f"{hda_name}.hda")
 
         try:
             parent = hou.node(parent_path)
             if not parent:
-                return {"success": False, "error": f"Parent node not found at: '{parent_path}'"}
+                return {"success": False, "error": f"Parent node not found: '{parent_path}'"}
 
-            # Create base node subnet
-            base_node = parent.createNode(node_type, hda_name)
+            # 2. Create the base node subnet
+            subnet = parent.createNode(node_type, hda_name)
             
-            # Label
-            base_node.setComment(f"HDA Scaffold: {hda_label}")
-            base_node.moveToGoodPosition()
-            
+            # 3. Create HDA definition
+            definition = create_hda_from_subnet(subnet, hda_file_path, hda_name, hda_label)
+            if not definition:
+                return {"success": False, "error": f"Failed to package subnet into HDA definition."}
+
+            # 4. Inject script sections
+            if python_module_code:
+                set_hda_python_module(definition, python_module_code)
+            if on_created_code:
+                set_hda_event_script(definition, "OnCreated", on_created_code)
+
+            # 5. Build and promote parameter templates
+            if parameters_data:
+                group = definition.parmTemplateGroup()
+                for p_data in parameters_data:
+                    template = self._create_parm_template(p_data)
+                    if template:
+                        group.append(template)
+                set_hda_parm_template_group(definition, group)
+
+            # 6. Save and reload
+            save_and_reload_hda(definition, subnet)
+
             return {
                 "success": True,
-                "node_path": base_node.path(),
-                "message": f"Scaffold subnet created at {base_node.path()}. Ready for parameter promotions."
+                "node_path": subnet.path(),
+                "hda_file_path": hda_file_path,
+                "message": f"Successfully created and compiled HDA '{hda_name}' at '{hda_file_path}'."
             }
         except Exception as e:
-            return {"success": False, "error": f"Failed to generate HDA scaffold: {e}"}
+            return {"success": False, "error": f"HDA scaffolding failed: {e}"}
+
+    def _create_parm_template(self, p_data: Dict[str, Any]) -> Optional[hou.ParmTemplate]:
+        """Convert dictionary parameter definitions into native hou.ParmTemplate classes."""
+        import hou
+        name = p_data["name"]
+        label = p_data.get("label", name)
+        ptype = p_data["type"].lower()
+        default = p_data.get("default")
+        help_text = p_data.get("help_text", "")
+        callback = p_data.get("callback_script", "")
+
+        template: Optional[hou.ParmTemplate] = None
+
+        if ptype == "float":
+            default_val = (float(default),) if default is not None else (0.0,)
+            t = hou.FloatParmTemplate(name, label, 1, default_value=default_val, help=help_text)
+            min_val = p_data.get("min_range")
+            max_val = p_data.get("max_range")
+            if min_val is not None and max_val is not None:
+                t.setRange(float(min_val), float(max_val))
+            template = t
+        elif ptype == "int":
+            default_val = (int(default),) if default is not None else (0,)
+            t = hou.IntParmTemplate(name, label, 1, default_value=default_val, help=help_text)
+            min_val = p_data.get("min_range")
+            max_val = p_data.get("max_range")
+            if min_val is not None and max_val is not None:
+                t.setRange(int(min_val), int(max_val))
+            template = t
+        elif ptype == "string":
+            default_val = (str(default),) if default is not None else ("",)
+            template = hou.StringParmTemplate(name, label, 1, default_value=default_val, help=help_text)
+        elif ptype == "toggle":
+            default_val = str(default).lower() in ("true", "1", "yes") if default is not None else False
+            template = hou.ToggleParmTemplate(name, label, default_value=default_val, help=help_text)
+        elif ptype == "button":
+            t = hou.ButtonParmTemplate(name, label, help=help_text)
+            template = t
+        elif ptype == "file":
+            default_val = (str(default),) if default is not None else ("",)
+            template = hou.StringParmTemplate(
+                name, label, 1, default_value=default_val,
+                string_type=hou.stringParmType.FileReference, help=help_text
+            )
+
+        if template and callback:
+            template.setCallbackScript(callback)
+            template.setCallbackScriptLanguage(hou.scriptLanguage.Python)
+
+        return template
+

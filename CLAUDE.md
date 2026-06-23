@@ -256,6 +256,8 @@ Khi viết code Houdini-specific:
 | 2026-06-23 | Added prompt manager tests to test_ai_assistant.py; all tests verified green |
 | 2026-06-23 | Implemented Agentic Tool-calling and Safety Gates (Phase 4): concrete AITool instances, ActionApprovalDialog modal diff layout, main-thread HOM execution, multi-step agent loops, and loop-safety counters |
 | 2026-06-23 | Added tool schemas and regex parse unit tests; all suites verified green |
+| 2026-06-23 | Completed Phase 5: Upgraded GenerateHdaScaffoldTool with parameter template conversions, dynamic PythonModule/OnCreated event script packaging, expanded HDA Architect system prompts, and wrote comprehensive unit tests |
+
 
 
 

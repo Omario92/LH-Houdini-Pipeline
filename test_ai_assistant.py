@@ -402,6 +402,155 @@ def _test_ai_tools() -> None:
 check("AI Tool schemas and parse_tool_call parsing", _test_ai_tools)
 
 
+def _test_hda_scaffold_tool_parameters() -> None:
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.node_tools import GenerateHdaScaffoldTool
+    
+    # Create mock hou module
+    mock_hou = MagicMock()
+    mock_hou.stringParmType.FileReference = "FileReference"
+    mock_hou.scriptLanguage.Python = "Python"
+    
+    # Setup mocks for constructors
+    mock_hou.FloatParmTemplate = MagicMock()
+    mock_hou.IntParmTemplate = MagicMock()
+    mock_hou.StringParmTemplate = MagicMock()
+    mock_hou.ToggleParmTemplate = MagicMock()
+    mock_hou.ButtonParmTemplate = MagicMock()
+    
+    tool = GenerateHdaScaffoldTool()
+    
+    # We patch sys.modules so when the tool imports hou, it gets our mock
+    with patch.dict(sys.modules, {"hou": mock_hou}):
+        # Test float parameter template creation
+        float_data = {
+            "name": "my_float",
+            "label": "My Float",
+            "type": "float",
+            "default": "1.5",
+            "min_range": 0.0,
+            "max_range": 10.0,
+            "help_text": "A float parm",
+            "callback_script": "hou.phm().on_change()"
+        }
+        
+        mock_float_template = MagicMock()
+        mock_hou.FloatParmTemplate.return_value = mock_float_template
+        
+        res = tool._create_parm_template(float_data)
+        assert res is mock_float_template
+        
+        # Verify FloatParmTemplate constructor arguments
+        mock_hou.FloatParmTemplate.assert_called_once_with(
+            "my_float", "My Float", 1, default_value=(1.5,), help="A float parm"
+        )
+        mock_float_template.setRange.assert_called_once_with(0.0, 10.0)
+        mock_float_template.setCallbackScript.assert_called_once_with("hou.phm().on_change()")
+        mock_float_template.setCallbackScriptLanguage.assert_called_once_with("Python")
+        
+        # Test toggle parameter template creation
+        toggle_data = {
+            "name": "my_toggle",
+            "label": "My Toggle",
+            "type": "toggle",
+            "default": "true"
+        }
+        
+        mock_toggle_template = MagicMock()
+        mock_hou.ToggleParmTemplate.return_value = mock_toggle_template
+        
+        res_toggle = tool._create_parm_template(toggle_data)
+        assert res_toggle is mock_toggle_template
+        
+        mock_hou.ToggleParmTemplate.assert_called_once_with(
+            "my_toggle", "My Toggle", default_value=True, help=""
+        )
+        
+        # Test button parameter template creation
+        button_data = {
+            "name": "my_button",
+            "label": "My Button",
+            "type": "button",
+            "help_text": "Click me"
+        }
+        
+        mock_button_template = MagicMock()
+        mock_hou.ButtonParmTemplate.return_value = mock_button_template
+        
+        res_button = tool._create_parm_template(button_data)
+        assert res_button is mock_button_template
+        mock_hou.ButtonParmTemplate.assert_called_once_with(
+            "my_button", "My Button", help="Click me"
+        )
+
+check("GenerateHdaScaffoldTool parameter templates", _test_hda_scaffold_tool_parameters)
+
+
+@patch("lh_houdini_pipeline.houdini.hda.create_hda_from_subnet")
+@patch("lh_houdini_pipeline.houdini.hda.set_hda_python_module")
+@patch("lh_houdini_pipeline.houdini.hda.set_hda_event_script")
+@patch("lh_houdini_pipeline.houdini.hda.set_hda_parm_template_group")
+@patch("lh_houdini_pipeline.houdini.hda.save_and_reload_hda")
+def _test_hda_scaffold_tool_execute(
+    mock_save_reload: MagicMock,
+    mock_set_parm_group: MagicMock,
+    mock_set_event: MagicMock,
+    mock_set_py_module: MagicMock,
+    mock_create_hda: MagicMock,
+) -> None:
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.node_tools import GenerateHdaScaffoldTool
+    
+    mock_hou = MagicMock()
+    mock_hou.getenv.return_value = "E:/temp_hip"
+    
+    mock_subnet = MagicMock()
+    mock_subnet.path.return_value = "/obj/sop_mountain_generator"
+    mock_subnet.name.return_value = "sop_mountain_generator"
+    
+    mock_parent = MagicMock()
+    mock_parent.createNode.return_value = mock_subnet
+    mock_hou.node.return_value = mock_parent
+    
+    mock_definition = MagicMock()
+    mock_create_hda.return_value = mock_definition
+    
+    tool = GenerateHdaScaffoldTool()
+    
+    args = {
+        "parent_path": "/obj",
+        "node_type": "subnet",
+        "hda_name": "sop_mountain_generator",
+        "hda_label": "SOP Mountain Generator",
+        "python_module": "print('hello')",
+        "on_created": "print('created')",
+        "parameters": [
+            {"name": "height", "type": "float", "default": "2.0"}
+        ]
+    }
+    
+    with patch.dict(sys.modules, {"hou": mock_hou}):
+        res = tool.execute(args)
+        
+        # Verify success
+        assert res["success"] is True, f"Failed execution: {res}"
+        assert res["node_path"] == "/obj/sop_mountain_generator"
+        
+        # Verify calls
+        mock_hou.node.assert_called_once_with("/obj")
+        mock_parent.createNode.assert_called_once_with("subnet", "sop_mountain_generator")
+        
+        expected_hda_path = os.path.normpath("E:/temp_hip/otls/sop_mountain_generator.hda")
+        actual_hda_path = os.path.normpath(mock_create_hda.call_args[0][1])
+        assert actual_hda_path == expected_hda_path
+        
+        mock_create_hda.assert_called_once()
+        mock_set_py_module.assert_called_once_with(mock_definition, "print('hello')")
+        mock_set_event.assert_called_once_with(mock_definition, "OnCreated", "print('created')")
+        mock_set_parm_group.assert_called_once()
+        mock_save_reload.assert_called_once_with(mock_definition, mock_subnet)
+
+check("GenerateHdaScaffoldTool execute", _test_hda_scaffold_tool_execute)
+
+
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
