@@ -7,11 +7,15 @@ Manages chat session history, active modes (system prompts), and client factory 
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Dict, List, Optional
 
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.houdini_ai_assistant.config import AssistantConfigManager
 from lh_houdini_pipeline.tools.houdini_ai_assistant.core.client import LLMClient, create_client
+from lh_houdini_pipeline.tools.houdini_ai_assistant.tools import get_default_tools
+from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.base import AITool
 
 _log = get_logger(__name__)
 
@@ -23,6 +27,7 @@ class AIAssistant:
         self.config_manager = config_manager or AssistantConfigManager()
         self.history: List[Dict[str, str]] = []
         self.system_prompt: Optional[str] = "You are a helpful Technical Artist assistant in Houdini."
+        self.tools: List[AITool] = get_default_tools()
 
     def clear_history(self) -> None:
         """Reset the conversation history."""
@@ -36,6 +41,56 @@ class AIAssistant:
             msg["image_b64"] = image_b64
         self.history.append(msg)
 
+    def get_compiled_system_prompt(self) -> str:
+        """Merge base system prompt instructions with registered tool schemas."""
+        base = self.system_prompt or "You are a helpful Technical Artist assistant in Houdini."
+        if not self.tools:
+            return base
+
+        tool_lines = []
+        tool_lines.append("\n\n=== AGENTIC TOOL EXECUTION RULES ===")
+        tool_lines.append("You have access to the following tools to inspect or modify the Houdini scene:")
+        
+        for t in self.tools:
+            tool_lines.append(f"- Name: `{t.name}`")
+            tool_lines.append(f"  Description: {t.description}")
+            tool_lines.append(f"  Schema: {json.dumps(t.schema)}")
+        
+        tool_lines.append("\nTo call a tool, output a JSON block in markdown formatting at the end of your response:")
+        tool_lines.append("```json")
+        tool_lines.append("{")
+        tool_lines.append('    "action": "tool_name",')
+        tool_lines.append('    "arguments": {')
+        tool_lines.append('        "param_name": "param_value"')
+        tool_lines.append("    }")
+        tool_lines.append("}")
+        tool_lines.append("```")
+        tool_lines.append("IMPORTANT Rules:")
+        tool_lines.append("1. Never propose a tool action unless it is requested or necessary.")
+        tool_lines.append("2. Output ONLY ONE json block at the end of your message if you want to execute a tool.")
+        tool_lines.append("3. Once the tool executes, you will receive a new message with the output [TOOL RESULT]. Use that result to write your final response.")
+        
+        return base + "\n" + "\n".join(tool_lines)
+
+    def parse_tool_call(self, text: str) -> Optional[Dict[str, Any]]:
+        """Search text for a tool-call JSON block and return it if valid.
+
+        Matches code blocks: ```json ... ``` or ```tool ... ```
+        """
+        # Find JSON blocks
+        match = re.search(r"```(?:json|tool)?\s*(\{\s*\"action\".*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
+        if not match:
+            # Fallback check for raw JSON mapping if brackets match
+            match = re.search(r"(\{\s*\"action\"\s*:\s*\"[^\"]+\"\s*,\s*\"arguments\".*?\})", text, re.DOTALL)
+            
+        if match:
+            try:
+                data = json.loads(match.group(1).strip())
+                if isinstance(data, dict) and "action" in data and "arguments" in data:
+                    return data
+            except Exception as e:
+                _log.debug(f"Failed to parse potential tool JSON: {e}")
+        return None
 
     def get_client(self) -> LLMClient:
         """Create and return the active LLMClient instance based on current settings."""

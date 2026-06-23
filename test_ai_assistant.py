@@ -354,6 +354,55 @@ check("PromptManager modes and registry mappings", _test_prompt_manager)
 
 
 # ---------------------------------------------------------------------------
+# Agentic Tools Tests
+# ---------------------------------------------------------------------------
+
+print("\n=== Agentic Tools Tests ===")
+
+from lh_houdini_pipeline.tools.houdini_ai_assistant.tools import get_default_tools
+from lh_houdini_pipeline.tools.houdini_ai_assistant.core.assistant import AIAssistant
+
+def _test_ai_tools() -> None:
+    tools = get_default_tools()
+    assert len(tools) >= 6
+    
+    # Check that each tool has basic properties
+    for t in tools:
+        assert isinstance(t.name, str) and t.name
+        assert isinstance(t.description, str) and t.description
+        assert isinstance(t.schema, dict) and t.schema["type"] == "object"
+
+    # Test parser
+    assistant = AIAssistant()
+    
+    # Test valid tool block parsing
+    text_with_tool = (
+        "Let me create that node for you.\n"
+        "```json\n"
+        "{\n"
+        '    "action": "create_node",\n'
+        '    "arguments": {\n'
+        '        "parent_path": "/obj",\n'
+        '        "node_type": "null",\n'
+        '        "node_name": "my_null"\n'
+        "    }\n"
+        "}\n"
+        "```\n"
+    )
+    call = assistant.parse_tool_call(text_with_tool)
+    assert call is not None
+    assert call["action"] == "create_node"
+    assert call["arguments"]["node_type"] == "null"
+    
+    # Test invalid json block doesn't crash
+    text_invalid = "```json\n{invalid json}\n```"
+    call_invalid = assistant.parse_tool_call(text_invalid)
+    assert call_invalid is None
+
+check("AI Tool schemas and parse_tool_call parsing", _test_ai_tools)
+
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 

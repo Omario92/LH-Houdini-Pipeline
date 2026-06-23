@@ -254,6 +254,9 @@ Khi viết code Houdini-specific:
 | 2026-06-23 | Added scene context tests to test_ai_assistant.py; smoke and unit suites verified green |
 | 2026-06-23 | Implemented Chat UI & Streaming (Phase 3): ChatHistoryView scroll container, ChatBubbleWidget styled bubbles, Markdown QTextBrowser rendering, Copy Code block clipboard exporter, PromptManager mode selector dropdown |
 | 2026-06-23 | Added prompt manager tests to test_ai_assistant.py; all tests verified green |
+| 2026-06-23 | Implemented Agentic Tool-calling and Safety Gates (Phase 4): concrete AITool instances, ActionApprovalDialog modal diff layout, main-thread HOM execution, multi-step agent loops, and loop-safety counters |
+| 2026-06-23 | Added tool schemas and regex parse unit tests; all suites verified green |
+
 
 
 

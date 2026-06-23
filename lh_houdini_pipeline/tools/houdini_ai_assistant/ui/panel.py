@@ -2,11 +2,13 @@
 lh_houdini_pipeline.tools.houdini_ai_assistant.ui.panel
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Main PySide6 dockable panel UI for the Houdini AI Assistant.
-Integrates with the assistant core orchestrator and routes events.
+Integrates with the assistant core orchestrator, routes events,
+handles approval gates, and runs the agent loop.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from typing import Optional, Any, List
@@ -15,6 +17,7 @@ from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.houdini_ai_assistant.config import AssistantConfigManager
 from lh_houdini_pipeline.tools.houdini_ai_assistant.core.assistant import AIAssistant
 from lh_houdini_pipeline.tools.houdini_ai_assistant.prompts.manager import PromptManager
+from lh_houdini_pipeline.tools.houdini_ai_assistant.ui.approval import request_approval
 from lh_houdini_pipeline.tools.houdini_ai_assistant.ui.chat import ChatHistoryView
 from lh_houdini_pipeline.tools.houdini_ai_assistant.utils.async_utils import LLMWorker
 from lh_houdini_pipeline.ui import style as _style
@@ -45,6 +48,7 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         
         self._current_worker: Optional[LLMWorker] = None
         self._current_streaming_text = ""
+        self._agent_steps = 0  # Tool loop safety counter
 
         self._build_ui()
         self._load_config_to_ui()
@@ -348,14 +352,13 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         self._set_status("History cleared", "info")
 
     def _on_send(self) -> None:
-        """Main send triggers; creates background QThread and posts query."""
+        """Main send triggers; compiles context and starts the agent steps."""
         user_text = self._input_edit.text().strip()
         if not user_text:
             return
 
-        # Disable input while query is running
-        self._set_input_enabled(False)
         self._input_edit.clear()
+        self._agent_steps = 0  # Reset tool loops
 
         # Build formatted prompt content (with context if checked)
         formatted_content = user_text
@@ -379,13 +382,30 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
             except Exception as e:
                 _log.warning(f"Failed to extract scene context: {e}")
 
-        # Visual update in chat list
-        self._chat_history.append_message("user", formatted_content, image_b64=image_b64)
-
         # Add message to history (with fully formatted context content)
         self.assistant.add_message("user", formatted_content, image_b64=image_b64)
 
-        # Build client and run worker thread
+        # Visual update in chat list (we append user_text, not the massive context payload)
+        self._chat_history.append_message("user", user_text, image_b64=image_b64)
+
+        # Trigger background processing step
+        self._run_assistant_step()
+
+    def _run_assistant_step(self) -> None:
+        """Query the LLM client with active message history asynchronously."""
+        # Loop safety guard
+        if self._agent_steps >= 5:
+            self._chat_history.append_message(
+                "system",
+                "⚠️ Safety Halt: Maximum consecutive tool call loops (5) reached. Halting loop to prevent recursion."
+            )
+            self._set_input_enabled(True)
+            self._set_status("Halted", "warn")
+            return
+
+        self._agent_steps += 1
+        self._set_input_enabled(False)
+        
         try:
             client = self.assistant.get_client()
             self._current_streaming_text = ""
@@ -393,11 +413,14 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
             # Append empty assistant bubble to receive tokens
             self._chat_history.append_message("assistant", "")
             
+            # Get compiled system instructions containing tool definitions
+            compiled_system_prompt = self.assistant.get_compiled_system_prompt()
+            
             # Start QThread worker
             self._current_worker = LLMWorker(
                 client=client,
                 messages=self.assistant.history,
-                system_prompt=self.assistant.system_prompt,
+                system_prompt=compiled_system_prompt,
                 stream=True,
                 parent=self
             )
@@ -436,8 +459,62 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
             self._chat_history.update_last_message(self._current_streaming_text)
 
     def _on_worker_finished(self, full_response: str) -> None:
-        """Clean up finished worker thread."""
+        """Main thread callback when LLM query is fully completed. Parses tool calls."""
+        # 1. Commit response to active session history
         self.assistant.add_message("assistant", full_response)
+        
+        # 2. Check for proposed tool calls
+        tool_call = self.assistant.parse_tool_call(full_response)
+        
+        if tool_call:
+            action = tool_call["action"]
+            args = tool_call["arguments"]
+            
+            # Find matching tool
+            tool = next((t for t in self.assistant.tools if t.name == action), None)
+            
+            if tool:
+                # 3. Query User Approval (modal dialog on main thread)
+                self._set_status("Awaiting Approval...", "working")
+                approved = request_approval(action, args, self)
+                
+                if approved:
+                    self._chat_history.append_message("system", f"Artist approved action **{action}**.")
+                    self._set_status("Executing...", "working")
+                    
+                    try:
+                        # 4. Execute tool logic (safe on main thread)
+                        res = tool.execute(args)
+                        res_str = json.dumps(res, indent=2) if isinstance(res, dict) else str(res)
+                        
+                        # Add feedback message to history
+                        self.assistant.add_message("user", f"[TOOL RESULT]: {res_str}")
+                        self._chat_history.append_message("system", f"Tool **{action}** executed successfully.")
+                        
+                        # 5. Continue loop asynchronously
+                        QtCore.QTimer.singleShot(100, self._run_assistant_step)
+                        return
+                    except Exception as ex:
+                        err_msg = f"Failed to execute tool: {ex}"
+                        self._chat_history.append_message("system", f"**ERROR**: {err_msg}")
+                        self.assistant.add_message("user", f"[TOOL ERROR]: {err_msg}")
+                        QtCore.QTimer.singleShot(100, self._run_assistant_step)
+                        return
+                else:
+                    # Rejected by user
+                    self._chat_history.append_message("system", f"Artist rejected action **{action}**.")
+                    self.assistant.add_message("user", f"[TOOL RESULT]: Action '{action}' was rejected by the artist.")
+                    QtCore.QTimer.singleShot(100, self._run_assistant_step)
+                    return
+            else:
+                # Tool not found
+                err_msg = f"Tool '{action}' is not registered in this pipeline."
+                self._chat_history.append_message("system", f"**ERROR**: {err_msg}")
+                self.assistant.add_message("user", f"[TOOL ERROR]: {err_msg}")
+                QtCore.QTimer.singleShot(100, self._run_assistant_step)
+                return
+        
+        # No tool calls proposed; loop finishes. Re-enable input fields.
         self._set_input_enabled(True)
         self._set_status("Done", "done")
         self._current_worker = None
