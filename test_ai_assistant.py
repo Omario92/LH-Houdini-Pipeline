@@ -551,6 +551,87 @@ def _test_hda_scaffold_tool_execute(
 check("GenerateHdaScaffoldTool execute", _test_hda_scaffold_tool_execute)
 
 
+def _test_mcp_integration() -> None:
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.server import McpTcpServer
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.client import McpClient, DelegatedMcpTool
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.base import AITool
+    
+    class DummyTool(AITool):
+        @property
+        def name(self) -> str:
+            return "dummy_tool"
+        @property
+        def description(self) -> str:
+            return "A dummy tool for testing."
+        @property
+        def schema(self) -> dict:
+            return {"type": "object", "properties": {"val": {"type": "string"}}}
+        def execute(self, arguments: dict) -> dict:
+            return {"success": True, "output": arguments.get("val", "hello")}
+            
+    # 1. Start Server
+    server = McpTcpServer()
+    server._tools = [DummyTool()]
+    
+    # Port 14849 to avoid collision
+    ok = server.start(port=14849)
+    assert ok is True, "Failed to start McpTcpServer"
+    assert server.is_running() is True
+    
+    # 2. Connect Client
+    client = McpClient("tcp://127.0.0.1:14849")
+    connected = client.connect()
+    assert connected is True, "McpClient failed to connect to McpTcpServer"
+    
+    # 3. Check tools list
+    tools = client.list_tools()
+    assert len(tools) == 1
+    assert tools[0]["name"] == "dummy_tool"
+    assert tools[0]["inputSchema"]["type"] == "object"
+    
+    # 4. Call tool
+    res = client.call_tool("dummy_tool", {"val": "test-data"})
+    assert res.get("success") is True
+    assert res.get("output") == "test-data"
+    
+    # 5. Test tool approval callback
+    approval_called = []
+    def approval_cb(name: str, args: dict) -> bool:
+        approval_called.append((name, args))
+        return False # Reject
+        
+    server.approval_callback = approval_cb
+    
+    # Add a mock modifying tool
+    class MockCreateNode(AITool):
+        @property
+        def name(self) -> str:
+            return "create_node"
+        @property
+        def description(self) -> str:
+            return "Mock create node"
+        @property
+        def schema(self) -> dict:
+            return {"type": "object"}
+        def execute(self, arguments: dict) -> dict:
+            return {"success": True}
+            
+    server._tools.append(MockCreateNode())
+    client.connect() # Re-connect to list new tool
+    
+    res_reject = client.call_tool("create_node", {"parent": "/obj"})
+    assert len(approval_called) == 1
+    assert approval_called[0][0] == "create_node"
+    assert approval_called[0][1] == {"parent": "/obj"}
+    assert "rejected" in res_reject.get("message", "").lower()
+    
+    # 6. Stop Server
+    server.stop()
+    assert server.is_running() is False
+
+check("MCP Client/Server TCP integration", _test_mcp_integration)
+
+
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------

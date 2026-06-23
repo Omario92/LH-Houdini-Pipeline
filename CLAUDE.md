@@ -257,6 +257,7 @@ Khi viết code Houdini-specific:
 | 2026-06-23 | Implemented Agentic Tool-calling and Safety Gates (Phase 4): concrete AITool instances, ActionApprovalDialog modal diff layout, main-thread HOM execution, multi-step agent loops, and loop-safety counters |
 | 2026-06-23 | Added tool schemas and regex parse unit tests; all suites verified green |
 | 2026-06-23 | Completed Phase 5: Upgraded GenerateHdaScaffoldTool with parameter template conversions, dynamic PythonModule/OnCreated event script packaging, expanded HDA Architect system prompts, and wrote comprehensive unit tests |
+| 2026-06-23 | Completed Phase 6: Implemented socket-based MCP TCP Server and Client delegation, signal-based thread dispatching for HOM safety, approval callback gates, PySide6 UI panels, and integration unit tests |
 
 
 

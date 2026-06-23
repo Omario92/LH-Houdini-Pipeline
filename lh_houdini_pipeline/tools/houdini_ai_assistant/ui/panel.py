@@ -20,6 +20,8 @@ from lh_houdini_pipeline.tools.houdini_ai_assistant.prompts.manager import Promp
 from lh_houdini_pipeline.tools.houdini_ai_assistant.ui.approval import request_approval
 from lh_houdini_pipeline.tools.houdini_ai_assistant.ui.chat import ChatHistoryView
 from lh_houdini_pipeline.tools.houdini_ai_assistant.utils.async_utils import LLMWorker
+from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.server import McpTcpServer
+from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.client import McpClient, DelegatedMcpTool
 from lh_houdini_pipeline.ui import style as _style
 
 _log = get_logger(__name__)
@@ -45,6 +47,12 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         self.config_manager = AssistantConfigManager()
         self.prompt_manager = PromptManager()
         self.assistant = AIAssistant(self.config_manager)
+        
+        # Initialize internal MCP TCP Server
+        self._mcp_server = McpTcpServer(self)
+        self._mcp_server.use_thread_dispatch = True
+        self._mcp_server.status_changed.connect(self._on_mcp_server_status_changed)
+        self._mcp_server.approval_callback = self._on_mcp_server_approval
         
         self._current_worker: Optional[LLMWorker] = None
         self._current_streaming_text = ""
@@ -143,22 +151,56 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         layout.addWidget(self._system_prompt_edit, 1)
 
     def _build_mcp_tab(self) -> None:
-        """Construct the MCP configuration tab."""
+        """Construct the MCP configuration tab with client and server controls."""
         layout = QtWidgets.QVBoxLayout(self._mcp_tab)
         layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
 
-        # Checkbox toggle
-        self._mcp_cb = QtWidgets.QCheckBox("Delegate to External MCP Claude (Client Mode)")
+        # Group 1: MCP Client settings
+        client_group = QtWidgets.QGroupBox("MCP Client Settings (Tool Delegation)")
+        client_layout = QtWidgets.QVBoxLayout(client_group)
+        client_layout.setSpacing(8)
+
+        self._mcp_cb = QtWidgets.QCheckBox("Enable Client Delegation")
         self._mcp_cb.stateChanged.connect(self._on_mcp_toggle)
-        layout.addWidget(self._mcp_cb)
+        client_layout.addWidget(self._mcp_cb)
 
-        # Server URL config
-        form = QtWidgets.QFormLayout()
-        form.setSpacing(6)
+        form_client = QtWidgets.QFormLayout()
+        form_client.setSpacing(6)
         self._mcp_url_edit = QtWidgets.QLineEdit()
+        self._mcp_url_edit.setPlaceholderText("tcp://127.0.0.1:14848 or http://localhost:8000")
         self._mcp_url_edit.textChanged.connect(self._on_mcp_url_changed)
-        form.addRow("MCP Server URL:", self._mcp_url_edit)
-        layout.addLayout(form)
+        form_client.addRow("External Server URL:", self._mcp_url_edit)
+        client_layout.addLayout(form_client)
+
+        self._mcp_connect_btn = QtWidgets.QPushButton("Connect & Load External Tools")
+        self._mcp_connect_btn.clicked.connect(self.update_mcp_tools)
+        client_layout.addWidget(self._mcp_connect_btn)
+
+        layout.addWidget(client_group)
+
+        # Group 2: Host Internal MCP TCP Server
+        server_group = QtWidgets.QGroupBox("Host Internal Houdini MCP TCP Server")
+        server_layout = QtWidgets.QVBoxLayout(server_group)
+        server_layout.setSpacing(8)
+
+        self._mcp_server_cb = QtWidgets.QCheckBox("Start MCP TCP Server")
+        self._mcp_server_cb.stateChanged.connect(self._on_mcp_server_toggle)
+        server_layout.addWidget(self._mcp_server_cb)
+
+        form_server = QtWidgets.QFormLayout()
+        form_server.setSpacing(6)
+        self._mcp_port_edit = QtWidgets.QLineEdit()
+        self._mcp_port_edit.setText("14848")
+        self._mcp_port_edit.textChanged.connect(self._on_mcp_port_changed)
+        form_server.addRow("TCP Listen Port:", self._mcp_port_edit)
+        
+        self._mcp_server_status_lbl = QtWidgets.QLabel("Status: Stopped")
+        self._mcp_server_status_lbl.setStyleSheet("color: #9aa0a6; font-style: italic;")
+        form_server.addRow("Server Status:", self._mcp_server_status_lbl)
+        server_layout.addLayout(form_server)
+
+        layout.addWidget(server_group)
         layout.addStretch()
 
     def _build_input_zone(self) -> QtWidgets.QLayout:
@@ -256,10 +298,16 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
 
         # Load MCP configs
         self._mcp_cb.setChecked(cfg.get("use_mcp", False))
-        self._mcp_url_edit.setText(cfg.get("mcp_server_url", "http://localhost:8000"))
+        self._mcp_url_edit.setText(cfg.get("mcp_server_url", "tcp://127.0.0.1:14848"))
+        self._mcp_port_edit.setText(str(cfg.get("mcp_server_port", 14848)))
+        self._mcp_server_cb.setChecked(cfg.get("use_mcp_server", False))
 
         # Setup initial prompt
         self._on_mode_changed()
+
+        # Initialize MCP client tools if active
+        if self._mcp_cb.isChecked():
+            self.update_mcp_tools()
 
     def _update_models_dropdown(self) -> None:
         """Load valid models for current provider into dropdown."""
@@ -337,12 +385,114 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         self.assistant.system_prompt = self._system_prompt_edit.toPlainText()
 
     def _on_mcp_toggle(self, state: int) -> None:
-        """Sync use_mcp checkbox state with config."""
+        """Sync use_mcp checkbox state with config and reload tools."""
         self.config_manager.save({"use_mcp": bool(state)})
+        self.update_mcp_tools()
 
     def _on_mcp_url_changed(self) -> None:
         """Sync MCP server URL config."""
         self.config_manager.save({"mcp_server_url": self._mcp_url_edit.text()})
+
+    def _on_mcp_server_toggle(self, state: int) -> None:
+        """Start or stop the internal TCP server based on checkbox state."""
+        self.config_manager.save({"use_mcp_server": bool(state)})
+        if state:
+            try:
+                port = int(self._mcp_port_edit.text().strip())
+            except ValueError:
+                port = 14848
+                self._mcp_port_edit.setText(str(port))
+            
+            self._mcp_server.start(port=port)
+        else:
+            self._mcp_server.stop()
+
+    def _on_mcp_port_changed(self) -> None:
+        """Save new port string to config."""
+        try:
+            port = int(self._mcp_port_edit.text().strip())
+            self.config_manager.save({"mcp_server_port": port})
+        except ValueError:
+            pass
+
+    def _on_mcp_server_status_changed(self, status: str) -> None:
+        """Update server status display."""
+        self._mcp_server_status_lbl.setText(f"Status: {status}")
+        if "Running" in status:
+            self._mcp_server_status_lbl.setStyleSheet("color: #4baf50; font-weight: bold;")
+        elif "Error" in status:
+            self._mcp_server_status_lbl.setStyleSheet("color: #f44336; font-weight: bold;")
+        else:
+            self._mcp_server_status_lbl.setStyleSheet("color: #9aa0a6; font-style: italic;")
+
+    def _on_mcp_server_approval(self, action: str, arguments: Dict[str, Any]) -> bool:
+        """Main thread callback to gate modifying actions from external socket requests."""
+        self._chat_history.append_message(
+            "system", f"ℹ️ External TCP Client requested tool **{action}**."
+        )
+        approved = request_approval(action, arguments, parent=self)
+        if approved:
+            self._chat_history.append_message("system", f"Artist approved external tool **{action}**.")
+        else:
+            self._chat_history.append_message("system", f"Artist rejected external tool **{action}**.")
+        return approved
+
+    def update_mcp_tools(self) -> None:
+        """Query the external MCP server and register delegated tools if client mode is active."""
+        # 1. Reset to standard default tools
+        from lh_houdini_pipeline.tools.houdini_ai_assistant.tools import get_default_tools
+        self.assistant.tools = get_default_tools()
+
+        if not self._mcp_cb.isChecked():
+            self._mcp_connect_btn.setEnabled(False)
+            self._set_status("MCP Client disabled", "info")
+            return
+
+        self._mcp_connect_btn.setEnabled(True)
+        url = self._mcp_url_edit.text().strip()
+        if not url:
+            self._set_status("MCP Client URL empty", "warn")
+            return
+
+        self._set_status("Connecting to MCP...", "working")
+        
+        # Connect to client dynamically
+        client = McpClient(url)
+        if client.connect():
+            ext_tools = client.list_tools()
+            loaded_count = 0
+            for tool_data in ext_tools:
+                name = tool_data.get("name")
+                if not name:
+                    continue
+                # Avoid shadowing built-in tools of same name
+                if any(t.name == name for t in self.assistant.tools):
+                    continue
+                
+                wrapped_tool = DelegatedMcpTool(
+                    name=name,
+                    description=tool_data.get("description", ""),
+                    schema=tool_data.get("inputSchema", {}),
+                    client=client
+                )
+                self.assistant.tools.append(wrapped_tool)
+                loaded_count += 1
+            
+            self._chat_history.append_message(
+                "system", f"Connected to external MCP server. Loaded {loaded_count} delegated tools."
+            )
+            self._set_status("MCP Connected", "done")
+        else:
+            self._chat_history.append_message(
+                "system", f"⚠️ Warning: Failed to connect to external MCP server at '{url}'."
+            )
+            self._set_status("MCP Connection Error", "error")
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        """Clean up background TCP servers on exit to avoid orphaned ports."""
+        if hasattr(self, "_mcp_server"):
+            self._mcp_server.stop()
+        super().closeEvent(event)
 
     def _on_clear(self) -> None:
         """Clears assistant state and UI log."""
