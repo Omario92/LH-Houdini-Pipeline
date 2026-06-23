@@ -17,6 +17,10 @@ from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.node_tools import (
     SetParmTool,
 )
 from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.scene_tools import GetSceneContextTool
+from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.pipeline_tools import (
+    ProjectManagerCreateTool,
+    CameraManagerTurntableTool,
+)
 
 
 def get_default_tools() -> List[AITool]:
@@ -28,4 +32,6 @@ def get_default_tools() -> List[AITool]:
         LayoutNetworkTool(),
         RunPythonSnippetTool(),
         GenerateHdaScaffoldTool(),
+        ProjectManagerCreateTool(),
+        CameraManagerTurntableTool(),
     ]

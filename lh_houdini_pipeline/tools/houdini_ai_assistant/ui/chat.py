@@ -11,6 +11,7 @@ import re
 from typing import Optional, Any, List
 
 from lh_houdini_pipeline.core.logger import get_logger
+from lh_houdini_pipeline.ui import style as _style
 
 _log = get_logger(__name__)
 
@@ -48,14 +49,14 @@ class ChatBubbleWidget(QtWidgets.QFrame):
         if self.role == "user":
             self.setObjectName("userBubble")
             self.setStyleSheet(
-                "QFrame#userBubble { background-color: #2d3f56; border: 1px solid #3c4c5e; border-radius: 8px; }"
+                f"QFrame#userBubble {{ background-color: #2d3f56; border: 1px solid {_style.ACTION}; border-radius: 8px; }}"
             )
             # Layout margins: indent from left to push right
             layout.setContentsMargins(60, 8, 10, 8)
         else:
             self.setObjectName("assistantBubble")
             self.setStyleSheet(
-                "QFrame#assistantBubble { background-color: #232323; border: 1px solid #353535; border-radius: 8px; }"
+                f"QFrame#assistantBubble {{ background-color: {_style.BG_INPUT}; border: 1px solid #3c3c3c; border-radius: 8px; }}"
             )
             # Layout margins: indent from right to push left
             layout.setContentsMargins(10, 8, 60, 8)
@@ -65,7 +66,7 @@ class ChatBubbleWidget(QtWidgets.QFrame):
         header_layout.setSpacing(6)
 
         sender_label = QtWidgets.QLabel("ARTIST" if self.role == "user" else "ASSISTANT")
-        sender_label.setStyleSheet("font-weight: bold; color: #ff9000; font-size: 10px; letter-spacing: 0.5px;")
+        sender_label.setStyleSheet(f"font-weight: bold; color: {_style.ACCENT}; font-size: 10px; letter-spacing: 0.5px;")
         header_layout.addWidget(sender_label)
 
         # Optional Badge Indicators
@@ -73,14 +74,14 @@ class ChatBubbleWidget(QtWidgets.QFrame):
             if "[User Question]" in self.raw_text or "HOUDINI SCENE CONTEXT OVERVIEW" in self.raw_text:
                 context_badge = QtWidgets.QLabel("Scene Context")
                 context_badge.setStyleSheet(
-                    "color: #ff9000; background: #1f2a36; border: 1px solid #ff9000; "
+                    f"color: {_style.ACCENT}; background: {_style.BG_LOG}; border: 1px solid {_style.ACCENT}; "
                     "border-radius: 3px; font-size: 9px; padding: 1px 4px;"
                 )
                 header_layout.addWidget(context_badge)
             if self.image_b64:
                 img_badge = QtWidgets.QLabel("Viewport Screenshot")
                 img_badge.setStyleSheet(
-                    "color: #4a90d9; background: #1f2a36; border: 1px solid #4a90d9; "
+                    f"color: {_style.ACTION}; background: {_style.BG_LOG}; border: 1px solid {_style.ACTION}; "
                     "border-radius: 3px; font-size: 9px; padding: 1px 4px;"
                 )
                 header_layout.addWidget(img_badge)
@@ -96,7 +97,7 @@ class ChatBubbleWidget(QtWidgets.QFrame):
         self._browser.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         # Inherit styling
         self._browser.setStyleSheet(
-            "background: transparent; border: none; font-size: 11px; color: #dfdfdf;"
+            f"background: transparent; border: none; font-size: 11px; color: {_style.TEXT};"
         )
         self._browser.document().contentsChanged.connect(self._adjust_browser_height)
         layout.addWidget(self._browser)
@@ -115,7 +116,7 @@ class ChatBubbleWidget(QtWidgets.QFrame):
 
             self._copy_code_btn = QtWidgets.QPushButton("Copy Code")
             self._copy_code_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon))
-            self._copy_code_btn.setStyleSheet("font-size: 9px; padding: 3px 8px; height: 18px; color: #ff9000;")
+            self._copy_code_btn.setStyleSheet(f"font-size: 9px; padding: 3px 8px; height: 18px; color: {_style.ACCENT};")
             self._copy_code_btn.clicked.connect(self._on_copy_code)
             self._copy_code_btn.setVisible(False)
             self._actions_row.addWidget(self._copy_code_btn)
@@ -168,19 +169,19 @@ class ChatHistoryView(QtWidgets.QScrollArea):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setFrameStyle(QtWidgets.QFrame.Shape.NoFrame)
-        self.setStyleSheet("background-color: #1a1a1a;")
+        self.setStyleSheet(f"background-color: {_style.BG_LOG};")
 
         # Scrollbar adjustments
         self.verticalScrollBar().setStyleSheet(
-            "QScrollBar:vertical { width: 8px; background: #1a1a1a; }"
-            "QScrollBar::handle:vertical { background: #3a3a3a; border-radius: 4px; }"
-            "QScrollBar::handle:vertical:hover { background: #ff9000; }"
+            f"QScrollBar:vertical {{ width: 8px; background: {_style.BG_LOG}; }}"
+            f"QScrollBar::handle:vertical {{ background: #3a3a3a; border-radius: 4px; }}"
+            f"QScrollBar::handle:vertical:hover {{ background: {_style.ACCENT}; }}"
         )
 
         # Setup inner container
         self._container = QtWidgets.QWidget()
         self._container.setObjectName("chatContainer")
-        self._container.setStyleSheet("QWidget#chatContainer { background-color: #1a1a1a; }")
+        self._container.setStyleSheet(f"QWidget#chatContainer {{ background-color: {_style.BG_LOG}; }}")
         self.setWidget(self._container)
 
         self._layout = QtWidgets.QVBoxLayout(self._container)

@@ -336,19 +336,19 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
             if count == 0:
                 self._context_chip.setText("No Selection")
                 self._context_chip.setStyleSheet(
-                    "color: #9aa0a6; background: #232323; padding: 2px 6px; "
+                    f"color: {_style.TEXT_DIM}; background: {_style.BG_INPUT}; padding: 2px 6px; "
                     "border: 1px solid #3a3a3a; border-radius: 4px; font-weight: bold;"
                 )
             else:
                 self._context_chip.setText(f"Selected Nodes: {count}")
                 self._context_chip.setStyleSheet(
-                    "color: #ff9000; font-weight: bold; background: #232323; padding: 2px 6px; "
-                    "border: 1px solid #ff9000; border-radius: 4px; font-weight: bold;"
+                    f"color: {_style.ACCENT}; font-weight: bold; background: {_style.BG_INPUT}; padding: 2px 6px; "
+                    f"border: 1px solid {_style.ACCENT}; border-radius: 4px; font-weight: bold;"
                 )
         except Exception:
             self._context_chip.setText("Standalone")
             self._context_chip.setStyleSheet(
-                "color: #9aa0a6; background: #232323; padding: 2px 6px; "
+                f"color: {_style.TEXT_DIM}; background: {_style.BG_INPUT}; padding: 2px 6px; "
                 "border: 1px solid #3a3a3a; border-radius: 4px; font-weight: bold;"
             )
 
@@ -419,11 +419,11 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         """Update server status display."""
         self._mcp_server_status_lbl.setText(f"Status: {status}")
         if "Running" in status:
-            self._mcp_server_status_lbl.setStyleSheet("color: #4baf50; font-weight: bold;")
+            self._mcp_server_status_lbl.setStyleSheet(f"color: {_style.OK}; font-weight: bold;")
         elif "Error" in status:
-            self._mcp_server_status_lbl.setStyleSheet("color: #f44336; font-weight: bold;")
+            self._mcp_server_status_lbl.setStyleSheet(f"color: {_style.ERROR}; font-weight: bold;")
         else:
-            self._mcp_server_status_lbl.setStyleSheet("color: #9aa0a6; font-style: italic;")
+            self._mcp_server_status_lbl.setStyleSheet(f"color: {_style.TEXT_DIM}; font-style: italic;")
 
     def _on_mcp_server_approval(self, action: str, arguments: Dict[str, Any]) -> bool:
         """Main thread callback to gate modifying actions from external socket requests."""

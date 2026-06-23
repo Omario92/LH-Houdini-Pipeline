@@ -632,6 +632,108 @@ def _test_mcp_integration() -> None:
 check("MCP Client/Server TCP integration", _test_mcp_integration)
 
 
+def _test_pipeline_tools() -> None:
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.pipeline_tools import (
+        ProjectManagerCreateTool,
+        CameraManagerTurntableTool,
+    )
+    from unittest.mock import MagicMock, patch
+    
+    # 1. Test ProjectManagerCreateTool
+    pm_tool = ProjectManagerCreateTool()
+    assert pm_tool.name == "project_manager_create_project"
+    assert "root" in pm_tool.schema["required"]
+    
+    with patch("lh_houdini_pipeline.tools.project_manager.core.plan_project") as mock_plan, \
+         patch("lh_houdini_pipeline.tools.project_manager.service.create_project") as mock_create, \
+         patch("lh_houdini_pipeline.tools.project_manager.service.set_houdini_job") as mock_job:
+         
+        mock_plan_inst = MagicMock()
+        mock_plan_inst.project = "test_proj"
+        mock_plan_inst.project_root = "/some/path/test_proj"
+        mock_plan_inst.directories = ("/some/path/test_proj", "/some/path/test_proj/houdini")
+        mock_plan.return_value = mock_plan_inst
+        
+        mock_result = MagicMock()
+        mock_result.ok = True
+        mock_result.summary.return_value = "2 created"
+        mock_create.return_value = mock_result
+        mock_job.return_value = True
+        
+        args = {
+            "root": "/some/path",
+            "project": "test_proj",
+            "assets": ["hero"],
+            "shots": ["sh01"]
+        }
+        res = pm_tool.execute(args)
+        assert res["success"] is True
+        assert "test_proj" in res["message"]
+        assert res["job_set"] is True
+        mock_plan.assert_called_once_with("/some/path", "test_proj", assets=["hero"], shots=["sh01"])
+        mock_create.assert_called_once_with(mock_plan_inst, dry_run=False)
+        mock_job.assert_called_once_with("/some/path/test_proj")
+
+    # 2. Test CameraManagerTurntableTool
+    cam_tool = CameraManagerTurntableTool()
+    assert cam_tool.name == "camera_manager_create_turntable"
+    
+    with patch("lh_houdini_pipeline.tools.camera_manager.service.create_turntable") as mock_turntable:
+        mock_turntable.return_value = "/stage/orbit_cam"
+        args = {
+            "name": "orbit_cam",
+            "total_frames": 240,
+            "center": [0, 1.5, 0],
+            "radius": 15.0,
+            "target_path": "/stage/geo_mesh"
+        }
+        res = cam_tool.execute(args)
+        assert res["success"] is True
+        assert res["node_path"] == "/stage/orbit_cam"
+        mock_turntable.assert_called_once()
+        
+        call_kwargs = mock_turntable.call_args[1]
+        assert call_kwargs["center"] == (0.0, 1.5, 0.0)
+        assert call_kwargs["radius"] == 15.0
+        assert call_kwargs["target_path"] == "/stage/geo_mesh"
+        assert call_kwargs["spec"].total_frames == 240
+
+check("AITool ProjectManager and CameraManager bindings", _test_pipeline_tools)
+
+
+def _test_mcp_client_error_handling() -> None:
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.client import McpClient
+    from unittest.mock import patch, MagicMock
+    import requests
+    
+    # 1. Connection Timeout error
+    with patch("socket.create_connection", side_effect=TimeoutError("Connection timed out")):
+        client = McpClient("tcp://127.0.0.1:9999")
+        connected = client.connect()
+        assert connected is False
+        
+    # 2. Malformed JSON-RPC handshake response error
+    mock_socket = MagicMock()
+    mock_file = MagicMock()
+    mock_file.readline.return_value = "not a valid json payload\n"
+    mock_socket.makefile.return_value = mock_file
+    
+    with patch("socket.create_connection", return_value=mock_socket):
+        client = McpClient("tcp://127.0.0.1:9999")
+        connected = client.connect()
+        assert connected is False
+        
+    # 3. HTTP Timeout on call_tool
+    client = McpClient("http://localhost:8000")
+    client._is_connected = True
+    with patch("requests.post", side_effect=requests.Timeout("HTTP timed out")):
+        res = client.call_tool("some_tool", {})
+        assert res["success"] is False
+        assert "timed out" in res["error"].lower()
+
+check("MCP Client robust error handling", _test_mcp_client_error_handling)
+
+
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------

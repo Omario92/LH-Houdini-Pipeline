@@ -109,9 +109,15 @@ class McpClient:
                 f = s.makefile("r", encoding="utf-8")
                 init_resp_line = f.readline()
                 if not init_resp_line:
+                    _log.error(f"TCP handshake failed: Empty response from {host}:{port}")
                     return False
                 
-                init_resp = json.loads(init_resp_line)
+                try:
+                    init_resp = json.loads(init_resp_line)
+                except json.JSONDecodeError as e:
+                    _log.error(f"Malformed JSON handshake response from TCP server at {host}:{port}: {e}")
+                    return False
+
                 if "error" in init_resp:
                     _log.error(f"TCP Handshake error: {init_resp['error']}")
                     return False
@@ -126,16 +132,29 @@ class McpClient:
                 
                 list_resp_line = f.readline()
                 if not list_resp_line:
+                    _log.error(f"TCP list tools failed: Empty response from {host}:{port}")
                     return False
                 
-                list_resp = json.loads(list_resp_line)
+                try:
+                    list_resp = json.loads(list_resp_line)
+                except json.JSONDecodeError as e:
+                    _log.error(f"Malformed JSON tools list response from TCP server at {host}:{port}: {e}")
+                    return False
+
                 if "error" in list_resp:
+                    _log.error(f"TCP list tools returned error: {list_resp['error']}")
                     return False
 
                 self.tools = list_resp.get("result", {}).get("tools", [])
                 return True
+        except socket.timeout:
+            _log.error(f"TCP connection to {host}:{port} timed out (timeout=5s).")
+            return False
+        except (ConnectionRefusedError, ConnectionResetError) as e:
+            _log.error(f"TCP connection to {host}:{port} refused or reset: {e}")
+            return False
         except Exception as e:
-            _log.debug(f"TCP connection failed to {host}:{port}: {e}")
+            _log.error(f"TCP connection failed to {host}:{port}: {e}")
             return False
 
     def _call_tool_tcp(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -147,57 +166,68 @@ class McpClient:
             host = self.netloc
             port = 14848
 
-        with socket.create_connection((host, port), timeout=10) as s:
-            # Re-initialize for this command transaction
-            init_req = {
-                "jsonrpc": "2.0",
-                "method": "initialize",
-                "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
-                "id": 1
-            }
-            s.sendall((json.dumps(init_req) + "\n").encode("utf-8"))
-            
-            f = s.makefile("r", encoding="utf-8")
-            f.readline() # Read initialize response discard
+        try:
+            with socket.create_connection((host, port), timeout=10) as s:
+                # Re-initialize for this command transaction
+                init_req = {
+                    "jsonrpc": "2.0",
+                    "method": "initialize",
+                    "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                    "id": 1
+                }
+                s.sendall((json.dumps(init_req) + "\n").encode("utf-8"))
+                
+                f = s.makefile("r", encoding="utf-8")
+                f.readline() # Read initialize response discard
 
-            # Call tool
-            call_req = {
-                "jsonrpc": "2.0",
-                "method": "tools/call",
-                "params": {
-                    "name": name,
-                    "arguments": arguments
-                },
-                "id": 2
-            }
-            s.sendall((json.dumps(call_req) + "\n").encode("utf-8"))
-            
-            call_resp_line = f.readline()
-            if not call_resp_line:
-                return {"success": False, "error": "Empty socket response"}
-            
-            resp = json.loads(call_resp_line)
-            if "error" in resp:
-                return {"success": False, "error": resp["error"].get("message", "Unknown JSON-RPC error")}
+                # Call tool
+                call_req = {
+                    "jsonrpc": "2.0",
+                    "method": "tools/call",
+                    "params": {
+                        "name": name,
+                        "arguments": arguments
+                    },
+                    "id": 2
+                }
+                s.sendall((json.dumps(call_req) + "\n").encode("utf-8"))
+                
+                call_resp_line = f.readline()
+                if not call_resp_line:
+                    return {"success": False, "error": "Empty socket response from server"}
+                
+                try:
+                    resp = json.loads(call_resp_line)
+                except json.JSONDecodeError as e:
+                    return {"success": False, "error": f"Malformed JSON-RPC payload from server: {e}"}
 
-            # Unpack MCP contents
-            result = resp.get("result", {})
-            content_list = result.get("content", [])
-            is_error = result.get("isError", False)
+                if "error" in resp:
+                    return {"success": False, "error": resp["error"].get("message", "Unknown JSON-RPC error")}
 
-            text_response = ""
-            if content_list:
-                text_response = content_list[0].get("text", "")
+                # Unpack MCP contents
+                result = resp.get("result", {})
+                content_list = result.get("content", [])
+                is_error = result.get("isError", False)
 
-            try:
-                # Try parsing as JSON first
-                parsed_res = json.loads(text_response)
-                if isinstance(parsed_res, dict):
-                    return parsed_res
-            except Exception:
-                pass
+                text_response = ""
+                if content_list:
+                    text_response = content_list[0].get("text", "")
 
-            return {"success": not is_error, "message": text_response}
+                try:
+                    # Try parsing as JSON first
+                    parsed_res = json.loads(text_response)
+                    if isinstance(parsed_res, dict):
+                        return parsed_res
+                except Exception:
+                    pass
+
+                return {"success": not is_error, "message": text_response}
+        except socket.timeout:
+            return {"success": False, "error": f"TCP command execution to {host}:{port} timed out (timeout=10s)."}
+        except ConnectionError as e:
+            return {"success": False, "error": f"TCP connection error to {host}:{port}: {e}"}
+        except Exception as e:
+            return {"success": False, "error": f"Unexpected error during TCP tool call: {e}"}
 
     # -- HTTP Transport Implementation ---------------------------------------
 
@@ -216,15 +246,18 @@ class McpClient:
                 "id": 1
             }
             
-            resp = requests.post(self.server_url, json=init_req, timeout=5)
-            if resp.status_code != 200:
-                # Fallback: check if we can query tools directly (some simple MCP mock servers only support raw endpoint mappings)
-                pass
-            else:
-                data = resp.json()
-                if "error" in data:
-                    _log.error(f"HTTP Handshake error: {data['error']}")
-                    return False
+            try:
+                resp = requests.post(self.server_url, json=init_req, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if "error" in data:
+                        _log.error(f"HTTP Handshake error: {data['error']}")
+                        return False
+            except requests.Timeout:
+                _log.error(f"HTTP connection to {self.server_url} timed out during handshake (timeout=5s).")
+                return False
+            except requests.RequestException as e:
+                _log.debug(f"HTTP initialize request failed: {e}. Attempting direct tools/list query.")
 
             # 2. Query tools/list
             list_req = {
@@ -232,12 +265,24 @@ class McpClient:
                 "method": "tools/list",
                 "id": 2
             }
-            resp = requests.post(self.server_url, json=list_req, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                self.tools = data.get("result", {}).get("tools", [])
-                return True
-            return False
+            try:
+                resp = requests.post(self.server_url, json=list_req, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self.tools = data.get("result", {}).get("tools", [])
+                    return True
+                else:
+                    _log.error(f"HTTP tools/list failed with status code {resp.status_code}")
+                    return False
+            except requests.Timeout:
+                _log.error(f"HTTP connection to {self.server_url} timed out during tools list query (timeout=5s).")
+                return False
+            except json.JSONDecodeError as e:
+                _log.error(f"Malformed JSON response from HTTP server at {self.server_url}: {e}")
+                return False
+            except requests.RequestException as e:
+                _log.error(f"HTTP request failed: {e}")
+                return False
         except Exception as e:
             _log.debug(f"HTTP connection failed to {self.server_url}: {e}")
             return False
@@ -253,30 +298,41 @@ class McpClient:
             },
             "id": 3
         }
-        resp = requests.post(self.server_url, json=call_req, timeout=10)
-        if resp.status_code != 200:
-            return {"success": False, "error": f"HTTP status {resp.status_code}"}
-
-        data = resp.json()
-        if "error" in data:
-            return {"success": False, "error": data["error"].get("message", "Unknown HTTP JSON-RPC error")}
-
-        result = data.get("result", {})
-        content_list = result.get("content", [])
-        is_error = result.get("isError", False)
-
-        text_response = ""
-        if content_list:
-            text_response = content_list[0].get("text", "")
-
         try:
-            parsed_res = json.loads(text_response)
-            if isinstance(parsed_res, dict):
-                return parsed_res
-        except Exception:
-            pass
+            resp = requests.post(self.server_url, json=call_req, timeout=10)
+            if resp.status_code != 200:
+                return {"success": False, "error": f"HTTP error status code: {resp.status_code}"}
 
-        return {"success": not is_error, "message": text_response}
+            try:
+                data = resp.json()
+            except json.JSONDecodeError as e:
+                return {"success": False, "error": f"Malformed JSON response from HTTP server: {e}"}
+
+            if "error" in data:
+                return {"success": False, "error": data["error"].get("message", "Unknown HTTP JSON-RPC error")}
+
+            result = data.get("result", {})
+            content_list = result.get("content", [])
+            is_error = result.get("isError", False)
+
+            text_response = ""
+            if content_list:
+                text_response = content_list[0].get("text", "")
+
+            try:
+                parsed_res = json.loads(text_response)
+                if isinstance(parsed_res, dict):
+                    return parsed_res
+            except Exception:
+                pass
+
+            return {"success": not is_error, "message": text_response}
+        except requests.Timeout:
+            return {"success": False, "error": f"HTTP command execution to {self.server_url} timed out (timeout=10s)."}
+        except requests.RequestException as e:
+            return {"success": False, "error": f"HTTP request failed to {self.server_url}: {e}"}
+        except Exception as e:
+            return {"success": False, "error": f"Unexpected error during HTTP tool call: {e}"}
 
 
 class DelegatedMcpTool(AITool):
