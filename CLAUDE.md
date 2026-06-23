@@ -248,3 +248,12 @@ Khi viết code Houdini-specific:
 | 2026-06-22 | project_manager: added controller.py (ProjectController QObject: validate/preview/create signals) + core.sanitize_name |
 | 2026-06-22 | project_manager UI redesign (PySide6 dark theme): 3-zone cards, drag&drop root, real-time validation, QTreeWidget preview, status bar, collapsible log, Dry-run/Create |
 | 2026-06-22 | VERIFIED live PySide6: validation gating, sanitize hint, tree preview (37 dirs), dry-run no-write, create+\$JOB, exists-warning, minimal-toggle |
+| 2026-06-23 | Bootstrapped Houdini AI Assistant (Phase 1): OOP folder tree, launch endpoints, config loader, LLMClient HTTP stream parsers, QThread worker, and PySide6 UI panel skeleton |
+| 2026-06-23 | Added test_ai_assistant.py covering LLM mock chat/streaming; all suites verified green |
+| 2026-06-23 | Implemented Scene Context Engine (Phase 2): context_inspector HOM parser, context_formatter token-efficient Markdown structures, multimodal vision mapping, selection polling timer, and UI options |
+| 2026-06-23 | Added scene context tests to test_ai_assistant.py; smoke and unit suites verified green |
+| 2026-06-23 | Implemented Chat UI & Streaming (Phase 3): ChatHistoryView scroll container, ChatBubbleWidget styled bubbles, Markdown QTextBrowser rendering, Copy Code block clipboard exporter, PromptManager mode selector dropdown |
+| 2026-06-23 | Added prompt manager tests to test_ai_assistant.py; all tests verified green |
+
+
+
