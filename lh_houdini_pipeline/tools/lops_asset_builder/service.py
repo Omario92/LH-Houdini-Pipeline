@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from lh_houdini_pipeline.core.logger import get_logger
+from lh_houdini_pipeline.core.profiling import timed
 from lh_houdini_pipeline.houdini import lop as _lop
 from lh_houdini_pipeline.materialx.builder import MtlxNetworkBuilder
 from lh_houdini_pipeline.tools.lops_asset_builder.core import AssetBuildPlan
@@ -57,6 +58,7 @@ class AssetBuildResult:
     materials_built: tuple = field(default_factory=tuple)
 
 
+@timed("lops_asset_builder.build_asset")
 def build_asset(
     plan: AssetBuildPlan,
     parent_path: str = "/stage",

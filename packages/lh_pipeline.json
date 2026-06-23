@@ -1,0 +1,10 @@
+{
+  "//": "LH Houdini Pipeline package. Install: copy this file into your Houdini",
+  "//install": "user packages dir, e.g. $HOUDINI_USER_PREF_DIR/packages/ (houdini21.0/packages/).",
+  "enable": true,
+  "env": [
+    { "LH_PIPELINE_ROOT": "F:/HOUDINI/LH-Houdini-Pipeline" },
+    { "PYTHONPATH": { "value": "$LH_PIPELINE_ROOT", "method": "prepend" } }
+  ],
+  "path": "$LH_PIPELINE_ROOT"
+}

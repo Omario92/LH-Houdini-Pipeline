@@ -30,6 +30,8 @@ from lh_houdini_pipeline.tools.camera_manager.core import (
     CameraFrameData,
     CameraVariantSpec,
     VariantSetSpec,
+    ExpandedCameraSpec,
+    plan_expanded_cameras,
     plan_merge,
     spec_from_preset,
     turntable_transforms,
@@ -48,6 +50,11 @@ from lh_houdini_pipeline.tools.camera_manager.service import (
     bake_camera_to_usd,
     export_camera,
     create_camera_variants,
+    create_camera_variant_author,
+    set_camera_variant_selection,
+    expand_camera_variants_to_cameras,
+    get_camera_variant_sets,
+    get_camera_variant_specs,
 )
 
 __all__ = [
@@ -62,6 +69,8 @@ __all__ = [
     "CameraFrameData",
     "CameraVariantSpec",
     "VariantSetSpec",
+    "ExpandedCameraSpec",
+    "plan_expanded_cameras",
     "plan_merge",
     "turntable_transforms",
     "write_nuke_camera_script",
@@ -77,6 +86,11 @@ __all__ = [
     "bake_camera_to_usd",
     "export_camera",
     "create_camera_variants",
+    "create_camera_variant_author",
+    "set_camera_variant_selection",
+    "expand_camera_variants_to_cameras",
+    "get_camera_variant_sets",
+    "get_camera_variant_specs",
     "launch",
 ]
 

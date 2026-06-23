@@ -36,6 +36,7 @@ from typing import Callable, List, Optional, Tuple, Union
 from lh_houdini_pipeline.core.executor import CommandResult, Executor
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.file.texture_parser import ColorSpace, TextureInfo
+from lh_houdini_pipeline.materialx.rules import TextureRole, classify_channel
 
 PathLike = Union[str, Path]
 _log = get_logger(__name__)
@@ -134,10 +135,14 @@ class TxConversionSpec:
 class MaketxPlanner:
     """Turn textures / :class:`TextureInfo` into :class:`TxConversionSpec`s.
 
-    Pure Python -- no ``hou``.  Colour textures (sRGB) get an explicit
-    ``-c <src> scene_linear`` conversion; data textures (raw) are passed
-    through with OCIO auto-detection.  This default is conservative and easy
-    to override per call.
+    Pure Python -- no ``hou``.  Conversion is driven by an explicit colour/data
+    classification (see :func:`materialx.rules.classify_channel`): colour
+    textures (base colour / emissive / SSS colour / specular) get an explicit
+    ``-c srgb_texture scene_linear`` linearisation; data textures (normal,
+    roughness, metalness, displacement, bump, mask, ...) are passed through
+    with an identity ``-c Raw Raw`` transform so their numeric values are
+    preserved exactly (``-l 0`` is insufficient -- it still linearises 8-bit
+    PNGs and darkens normals).
 
     Args:
         tx_format:  Output format for all specs (default ``RAT``).
@@ -155,6 +160,7 @@ class MaketxPlanner:
         filter: str = "catrom",
         only_newer: bool = True,
         scene_linear_token: str = "scene_linear",
+        raw_token: str = "Raw",
     ) -> None:
         if filter not in VALID_FILTERS:
             raise ValueError(
@@ -165,20 +171,34 @@ class MaketxPlanner:
         self._filter = filter
         self._only_newer = only_newer
         self._scene_linear = scene_linear_token
+        self._raw = raw_token
 
     def plan_path(
         self,
         source: PathLike,
         colorspace: ColorSpace = ColorSpace.RAW,
         out_dir: Optional[PathLike] = None,
+        role: Optional[TextureRole] = None,
     ) -> TxConversionSpec:
         """Plan a conversion for a bare texture *source* path.
 
+        Colour management is decided as follows:
+
+        * When *role* is given (the preferred path, used by :meth:`plan_info`
+          from the texture's detected channel) it is authoritative:
+          ``COLOUR`` -> ``-c srgb_texture scene_linear``; ``DATA`` -> ``-l 0``
+          raw passthrough.  This guarantees a normal/roughness/metalness map is
+          never sRGB-linearised (which corrupts its values).
+        * When *role* is ``None`` (a bare path call) the decision falls back to
+          *colorspace*, preserving the original behaviour.
+
         Args:
             source:     Input texture path (need not exist for planning).
-            colorspace: Colour role of the texture (drives ``-c`` decision).
+            colorspace: Colour role of the texture (used when *role* is None).
             out_dir:    Directory for the output; defaults to the source's
                         own directory.
+            role:       Explicit colour/data classification (overrides
+                        *colorspace*-based inference when supplied).
 
         Returns:
             A :class:`TxConversionSpec`.
@@ -191,13 +211,30 @@ class MaketxPlanner:
         dst_cs: Optional[str] = None
         use_ocio = False
         linearize: Optional[int] = None
-        if colorspace is ColorSpace.SRGB:
+
+        # Resolve role from colorspace when not given (bare-path calls).
+        if role is None:
+            role = (
+                TextureRole.COLOUR
+                if colorspace is ColorSpace.SRGB
+                else TextureRole.DATA
+            )
+
+        if role is TextureRole.COLOUR and colorspace is ColorSpace.SRGB:
+            # sRGB colour -> linearise to scene-linear.
             src_cs = "srgb_texture"
             dst_cs = self._scene_linear
-        elif colorspace is not ColorSpace.RAW:
+        elif role is TextureRole.COLOUR:
+            # Already-linear colour data (EXR/ACEScg): let OCIO handle it.
             use_ocio = True
         else:
-            linearize = 0
+            # DATA: normal / roughness / metalness / disp / mask / height.
+            # Identity ``-c Raw Raw`` preserves the source values exactly.
+            # NOTE: ``-l 0`` is NOT used -- it still linearises 8-bit PNGs and
+            # darkens normals (verified H21.0.631). ``-c Raw Raw`` is also
+            # idempotent, so an accidental double conversion cannot corrupt it.
+            src_cs = self._raw
+            dst_cs = self._raw
 
         return TxConversionSpec(
             source=src,
@@ -231,7 +268,8 @@ class MaketxPlanner:
                 "Tiled texture planned per-file (no UDIM batching in MVP): "
                 + info.stem
             )
-        return self.plan_path(info.path, info.colorspace, out_dir)
+        role = classify_channel(info.channel)
+        return self.plan_path(info.path, info.colorspace, out_dir, role=role)
 
     def plan_many(
         self, infos: List[TextureInfo], out_dir: Optional[PathLike] = None

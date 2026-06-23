@@ -1,0 +1,50 @@
+# lh_houdini_pipeline -- pipeline defaults (Rebelway Week 03: data-driven config)
+# -----------------------------------------------------------------------------
+# This is the BASE layer. It is deep-merged under, in order:
+#   1) this file (defaults)
+#   2) <project>/config.yaml          (per-show overrides, optional)
+#   3) ~/.lh_pipeline/config.yaml     (per-artist overrides, optional)
+#   4) LH_PIPELINE_* environment vars (per-session overrides)
+# Later layers win. Keep studio-wide truths here; never hardcode in Python.
+
+pipeline:
+  name: "LH Houdini Pipeline"
+  version: "0.2.0"
+
+# Filesystem layout templates consumed by core.path.PathResolver.
+# Tokens in {curly braces} are resolved against the active context.
+paths:
+  job_root: "F:/HOUDINI/jobs"
+  asset_dir: "{job_root}/{show}/assets/{asset}"
+  shot_dir: "{job_root}/{show}/shots/{seq}/{shot}"
+  cache_dir: "{job_root}/{show}/cache"
+  publish_dir: "{job_root}/{show}/publish"
+  texture_dir: "{asset_dir}/textures"
+
+# Naming conventions -- single source of truth for sanitisation/version tags.
+naming:
+  version_format: "v###"     # v001, v002, ... (file.versioning VersionFormat)
+  version_padding: 3
+  separator: "_"
+  illegal_chars: " /\\:*?\"<>|"
+
+# DCC + render defaults.
+dcc:
+  houdini_version: "21.0.631"
+  fps: 24
+
+render:
+  engine: "karma"
+  resolution: [1920, 1080]
+  colorspace_scene_linear: "scene_linear"
+  colorspace_texture: "srgb_texture"
+
+# Texture/material conversion (materialx.tx).
+texture:
+  target_format: "rat"       # imaketx -F RAT
+  prefer_converted: true     # .rat > .tx > source when scanning
+
+# Scene-cache policy (consumed by the upcoming Cache Manager, Tier 1).
+cache:
+  stale_after_days: 14
+  formats: ["bgeo.sc", "vdb", "usd", "abc"]

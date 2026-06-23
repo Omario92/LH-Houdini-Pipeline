@@ -556,3 +556,61 @@ class ConfigManager:
 
     def __repr__(self) -> str:
         return f"ConfigManager(registered={self.registered_names()})"
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap -- turn the layered-config design into one call sites can use
+# ---------------------------------------------------------------------------
+
+def default_config_path() -> Path:
+    """Return the path to the package's shipped ``config/defaults.yaml``."""
+    return Path(__file__).resolve().parent.parent / "config" / "defaults.yaml"
+
+
+def bootstrap_config(
+    project_config: Optional[Union[str, Path]] = None,
+    user_config: Optional[Union[str, Path]] = None,
+    apply_env: bool = True,
+) -> ConfigManager:
+    """Build a ready-to-use :class:`ConfigManager` from the standard layers.
+
+    Layer order (later overrides earlier):
+
+      1. Package ``config/defaults.yaml`` (always present).
+      2. *project_config*  -- per-show file, or ``$JOB/config.yaml`` if unset.
+      3. *user_config*     -- per-artist file, or ``~/.lh_pipeline/config.yaml``.
+      4. ``LH_PIPELINE_*`` environment variables (if *apply_env*).
+
+    Missing optional layers are silently skipped (``ConfigLoader.merge_files``
+    behaviour), so a fresh workstation with only the defaults still works.
+
+    Args:
+        project_config: Explicit per-project config path; falls back to
+                        ``$JOB/config.yaml`` when ``None``.
+        user_config:    Explicit per-user config path; falls back to
+                        ``~/.lh_pipeline/config.yaml`` when ``None``.
+        apply_env:      Overlay ``LH_PIPELINE_*`` env vars when ``True``.
+
+    Returns:
+        A :class:`ConfigManager` with the merged config registered as
+        ``"pipeline"``.  Access via ``mgr.get("pipeline").get("paths.cache_dir")``.
+    """
+    layers: List[Union[str, Path]] = [default_config_path()]
+
+    if project_config is not None:
+        layers.append(project_config)
+    else:
+        job = os.environ.get("JOB")
+        if job:
+            layers.append(Path(job) / "config.yaml")
+
+    if user_config is not None:
+        layers.append(user_config)
+    else:
+        layers.append(Path.home() / ".lh_pipeline" / "config.yaml")
+
+    mgr = ConfigManager(apply_env=apply_env)
+    # required=True on the defaults layer guarantees a clear error if the
+    # package install is broken (defaults.yaml missing).
+    mgr.load("pipeline", *layers, required=True)
+    return mgr

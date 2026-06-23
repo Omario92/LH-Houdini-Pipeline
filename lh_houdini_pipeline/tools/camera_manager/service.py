@@ -21,6 +21,8 @@ from typing import Any, List, Optional, Tuple
 
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.houdini import lop as _lop
+from lh_houdini_pipeline.houdini import traversal as _trav
+from lh_houdini_pipeline.core.profiling import timed
 from lh_houdini_pipeline.tools.camera_manager.core import (
     CAMERA_ANIM_PARMS,
     CameraContext,
@@ -85,6 +87,7 @@ def create_camera(
     return node.path()
 
 
+@timed("camera_manager.list_cameras")
 def list_cameras(context: CameraContext = CameraContext.OBJ) -> List[CameraInfo]:
     """List cameras in *context* with their focal length / resolution.
 
@@ -99,11 +102,12 @@ def list_cameras(context: CameraContext = CameraContext.OBJ) -> List[CameraInfo]
         return []
     type_name = _CONTEXT_TYPE[context]
 
-    infos: List[CameraInfo] = []
-    for node in root.allSubChildren():
-        if node.type().name() != type_name:
-            continue
-        infos.append(_describe(node, context))
+    # Use the shared graph-traversal brick (recursiveGlob fast-path) instead
+    # of a hand-rolled allSubChildren loop.
+    infos: List[CameraInfo] = [
+        _describe(node, context)
+        for node in _trav.find_by_type(root, type_name)
+    ]
     infos.sort(key=lambda i: i.path)
     return infos
 
@@ -127,20 +131,41 @@ def apply_resolution(camera_path: str, width: int, height: int) -> bool:
     return n == 2
 
 
-def delete_camera(camera_path: str) -> bool:
-    """Delete a camera node by path.
+def delete_camera(camera_path: str, with_helpers: bool = True) -> bool:
+    """Delete a camera node and (by default) its variant helper nodes.
+
+    The variant-author / variant-select Python LOPs author the camera prim via
+    ``OverridePrim`` -- so if they are left behind when the camera node is
+    destroyed they keep a *ghost* prim on the stage and stale code in the
+    network.  This removes ``{name}_variants_author`` and
+    ``{name}_variants_author_select`` alongside the camera so a delete is clean.
 
     Args:
-        camera_path: Full path to the camera node (OBJ ``cam`` or LOP ``camera``).
+        camera_path:  Full path to the camera node (OBJ ``cam`` / LOP ``camera``).
+        with_helpers: Also destroy associated variant author/select LOPs.
 
     Returns:
-        ``True`` if the node existed and was deleted, ``False`` otherwise.
+        ``True`` if the camera node existed and was deleted, ``False`` otherwise.
     """
     node = _lop.get_node(camera_path)
     if node is None:
         _log.warning("delete_camera: node not found: " + camera_path)
         return False
     path = node.path()
+    parent = node.parent()
+    name = node.name()
+
+    if with_helpers:
+        # Destroy the selector first (it is downstream of the author).
+        for helper_name in (name + "_variants_author_select", name + "_variants_author"):
+            helper = parent.node(helper_name)
+            if helper is not None:
+                try:
+                    helper.destroy()
+                    _log.info("Removed variant helper " + helper_name)
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("Could not remove " + helper_name + ": " + str(exc))
+
     try:
         node.destroy()
     except Exception as exc:  # noqa: BLE001
@@ -199,6 +224,7 @@ def sync_playback_range(
     return rng
 
 
+@timed("camera_manager.merge_cameras")
 def merge_cameras(
     cameras: List[str],
     merged_name: str = "merged_camera",
@@ -290,6 +316,7 @@ def merge_cameras(
     return merged.path()
 
 
+@timed("camera_manager.create_turntable")
 def create_turntable(
     spec: Optional[TurntableSpec] = None,
     center: Tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -429,6 +456,7 @@ def _eval(node: Any, parm_name: str) -> float:
 # Camera Export and Baking (USD / Alembic / Nuke .nk)
 # ---------------------------------------------------------------------------
 
+@timed("camera_manager.get_camera_frames")
 def get_camera_frames(camera_path: str, start_frame: int, end_frame: int) -> List[CameraFrameData]:
     """Extract world-space CameraFrameData from an OBJ or LOP camera over a range.
 
@@ -755,138 +783,337 @@ def export_camera(
     return results
 
 
+def _variant_sets_to_data(variant_sets):
+    """Convert ``VariantSetSpec`` objects to the nested dict for usd_variants."""
+    from lh_houdini_pipeline.houdini import usd_variants as _uv
+    data = {}
+    for vset in variant_sets:
+        variants = {}
+        for var in vset.variants:
+            variants[var.name] = _uv.variant_to_data(
+                var.focal_length,
+                tx=var.tx, ty=var.ty, tz=var.tz,
+                rx=var.rx, ry=var.ry, rz=var.rz,
+            )
+        data[vset.name] = variants
+    return data
+
+
+def create_camera_variant_author(
+    camera_path: str,
+    variant_sets: List[VariantSetSpec],
+    node_name: Optional[str] = None,
+    force: bool = True,
+) -> Optional[str]:
+    """Author *all* camera VariantSets with a SINGLE Python Script LOP.
+
+    Replaces the old one-LOP-per-VariantSet approach: a single
+    ``{camera}_variants_author`` node authors every set (lens, angle, dof, ...)
+    on the camera prim, which keeps the graph clean and easy to debug.
+
+    Note:
+        A USD VariantSet does *not* create extra camera nodes -- it layers
+        several opinions on the *same* prim.  Use
+        :func:`expand_camera_variants_to_cameras` for real per-variant cameras.
+
+    Args:
+        camera_path:  Path to the STAGE ``camera`` LOP node.
+        variant_sets: VariantSets to author.
+        node_name:    Override author-node name (default ``{camera}_variants_author``).
+        force:        Replace an existing node of the same name.
+
+    Returns:
+        The author node path, or ``None`` on failure.
+    """
+    from lh_houdini_pipeline.houdini import usd_variants as _uv
+
+    node = _lop.get_node(camera_path)
+    if node is None:
+        _log.error("create_camera_variant_author: node not found: " + camera_path)
+        return None
+    if node.type().name() != "camera":
+        _log.error(
+            "create_camera_variant_author: node must be a STAGE 'camera' LOP, got: "
+            + node.type().name()
+        )
+        return None
+    if not variant_sets:
+        _log.error("create_camera_variant_author: no variant sets given.")
+        return None
+
+    parent = node.parent()
+    prim_path = node.parm("primpath").eval() if node.parm("primpath") else "/" + node.name()
+    author_name = node_name or (node.name() + "_variants_author")
+
+    author = _lop.find_or_create(parent, "pythonscript", author_name)
+    if author is None:
+        return None
+    # Wire the author downstream of the camera (idempotent).
+    if not author.inputs() or author.inputs()[0] is None:
+        _lop.connect(author, node, input_index=0, output_index=0)
+
+    # Accumulate sets across calls so "add lens" then "add angle" both live on
+    # the SAME author node (merged), rather than replacing each other.
+    import json  # noqa: PLC0415
+    merged = {}
+    prior = author.userData("cm_variant_sets")
+    if prior:
+        try:
+            merged = json.loads(prior)
+        except Exception:  # noqa: BLE001
+            merged = {}
+    merged.update(_variant_sets_to_data(variant_sets))
+    author.setUserData("cm_variant_sets", json.dumps(merged))
+
+    code = _uv.build_variant_author_code(prim_path, merged)
+    if author.parm("python"):
+        author.parm("python").set(code)
+    author.setDisplayFlag(True)
+    _lop.layout(parent)
+    author.cook(force=True)
+    _log.info(
+        "Authored VariantSet(s) " + ", ".join(sorted(merged)) + " on "
+        + camera_path + " via " + author.path()
+    )
+    return author.path()
+
+
+def get_camera_variant_sets(camera_path: str) -> dict:
+    """Return ``{set_name: [variant_names]}`` authored on a camera, or ``{}``.
+
+    Reads the accumulated set data cached on the ``{camera}_variants_author``
+    node so the UI can present a selection dialog without parsing USD.
+
+    Args:
+        camera_path: Path to the STAGE ``camera`` LOP node.
+
+    Returns:
+        Mapping of set name to ordered variant names (empty if none authored).
+    """
+    import json  # noqa: PLC0415
+    node = _lop.get_node(camera_path)
+    if node is None:
+        return {}
+    author = node.parent().node(node.name() + "_variants_author")
+    if author is None:
+        return {}
+    raw = author.userData("cm_variant_sets")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return {}
+    return {set_name: list(variants.keys()) for set_name, variants in data.items()}
+
+
+def get_camera_variant_specs(camera_path: str) -> List[VariantSetSpec]:
+    """Reconstruct :class:`VariantSetSpec` objects authored on a camera.
+
+    Reads the data cached on ``{camera}_variants_author`` so the *Expand to
+    Cameras* mode can reuse the variants already defined as USD VariantSets.
+
+    Args:
+        camera_path: Path to the STAGE ``camera`` LOP node.
+
+    Returns:
+        List of :class:`VariantSetSpec` (empty if none authored).
+    """
+    import json  # noqa: PLC0415
+    node = _lop.get_node(camera_path)
+    if node is None:
+        return []
+    author = node.parent().node(node.name() + "_variants_author")
+    if author is None:
+        return []
+    raw = author.userData("cm_variant_sets")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return []
+
+    sets: List[VariantSetSpec] = []
+    for set_name, variants in data.items():
+        specs = []
+        for var_name, d in variants.items():
+            has_tf = bool(d.get("has_transform"))
+            specs.append(CameraVariantSpec(
+                name=var_name,
+                focal_length=d.get("focal"),
+                tx=d.get("tx") if has_tf else None,
+                ty=d.get("ty") if has_tf else None,
+                tz=d.get("tz") if has_tf else None,
+                rx=d.get("rx") if has_tf else None,
+                ry=d.get("ry") if has_tf else None,
+                rz=d.get("rz") if has_tf else None,
+            ))
+        sets.append(VariantSetSpec(set_name, tuple(specs)))
+    return sets
+
+
+def set_camera_variant_selection(
+    author_node_path: str,
+    selections: dict,
+) -> bool:
+    """Set the active variant selection(s) for preview.
+
+    Creates / updates a ``{author}_select`` Python Script LOP downstream of the
+    variant-author node so the chosen variants are composed for display.
+
+    Args:
+        author_node_path: Path to the ``*_variants_author`` node.
+        selections:       Mapping of ``set_name -> variant_name``.
+
+    Returns:
+        ``True`` on success.
+    """
+    from lh_houdini_pipeline.houdini import usd_variants as _uv
+
+    author = _lop.get_node(author_node_path)
+    if author is None:
+        _log.error("set_camera_variant_selection: author node not found: " + author_node_path)
+        return False
+    if not selections:
+        _log.error("set_camera_variant_selection: no selections given.")
+        return False
+
+    parent = author.parent()
+    # Resolve the camera prim path from the author node's first input chain.
+    cam = author.inputs()[0] if author.inputs() else None
+    prim_path = (
+        cam.parm("primpath").eval()
+        if cam is not None and cam.parm("primpath")
+        else "/" + author.name()
+    )
+
+    sel_name = author.name() + "_select"
+    selector = _lop.find_or_create(parent, "pythonscript", sel_name)
+    if selector is None:
+        return False
+    if not selector.inputs() or selector.inputs()[0] is None:
+        _lop.connect(selector, author, input_index=0, output_index=0)
+
+    code = _uv.build_variant_selection_code(prim_path, selections)
+    if selector.parm("python"):
+        selector.parm("python").set(code)
+    selector.setDisplayFlag(True)
+    _lop.layout(parent)
+    selector.cook(force=True)
+    _log.info("Set variant selection " + repr(selections) + " on " + author_node_path)
+    return True
+
+
+#: Base parms copied from the source camera onto each expanded camera.
+_EXPAND_COPY_PARMS = (
+    "focalLength", "horizontalAperture", "verticalAperture",
+    "fStop", "focusDistance", "clippingRange1", "clippingRange2",
+    "tx", "ty", "tz", "rx", "ry", "rz",
+)
+
+
+def expand_camera_variants_to_cameras(
+    source_camera_path: str,
+    variant_sets: List[VariantSetSpec],
+    combine: bool = False,
+    parent_path: Optional[str] = None,
+) -> List[str]:
+    """Create a real ``camera`` LOP per variant (artist-friendly mode).
+
+    Unlike :func:`create_camera_variant_author` (one prim, many USD opinions),
+    this materialises one *real* camera node per variant so artists can pick
+    them directly in the viewport / list.  The new cameras are chained off the
+    source camera so all their prims live on one output stage.
+
+    Args:
+        source_camera_path: Path to the STAGE ``camera`` LOP to clone.
+        variant_sets:       VariantSets to expand.
+        combine:            ``False`` -> one camera per variant; ``True`` ->
+                            cartesian product (e.g. lens x angle).
+        parent_path:        USD parent prim path for the new cameras
+                            (default ``/cameras``).
+
+    Returns:
+        List of created camera node paths (Houdini node paths).
+    """
+    from lh_houdini_pipeline.tools.camera_manager.core import plan_expanded_cameras
+
+    src = _lop.get_node(source_camera_path)
+    if src is None:
+        _log.error("expand_camera_variants_to_cameras: source not found: " + source_camera_path)
+        return []
+    if src.type().name() != "camera":
+        _log.error(
+            "expand_camera_variants_to_cameras: source must be a STAGE 'camera' LOP, got: "
+            + src.type().name()
+        )
+        return []
+    if not variant_sets:
+        _log.error("expand_camera_variants_to_cameras: no variant sets given.")
+        return []
+
+    network = src.parent()
+    specs = plan_expanded_cameras(
+        src.name(), variant_sets, combine=combine,
+        parent_path=(parent_path or "/cameras"),
+    )
+
+    created: List[str] = []
+    upstream = src
+    for spec in specs:
+        cam = _lop.create_node(network, "camera", spec.node_name, force=True)
+        if cam is None:
+            continue
+        _lop.connect(cam, upstream, input_index=0, output_index=0)
+        # Copy base parms from the source camera.
+        for pname in _EXPAND_COPY_PARMS:
+            sp = src.parm(pname)
+            dp = cam.parm(pname)
+            if sp is not None and dp is not None:
+                dp.set(sp.eval())
+        # Unique prim path.
+        if cam.parm("primpath"):
+            cam.parm("primpath").set(spec.prim_path)
+        # Apply overrides (focalLength parm is in mm -> Houdini scales it).
+        if spec.focal_length is not None and cam.parm("focalLength"):
+            cam.parm("focalLength").set(spec.focal_length)
+        for pname, value in spec.overrides.items():
+            if cam.parm(pname):
+                cam.parm(pname).set(value)
+        created.append(cam.path())
+        upstream = cam
+
+    if created:
+        network.node(specs[-1].node_name).setDisplayFlag(True)
+    _lop.layout(network)
+    _log.info(
+        "Expanded " + str(len(created)) + " camera(s) from " + source_camera_path
+        + (" (combined)" if combine else "")
+    )
+    return created
+
+
 def create_camera_variants(
     camera_path: str,
     variant_set_name: str,
     variants: List[CameraVariantSpec],
 ) -> bool:
-    """Create USD VariantSets (e.g. lens, angle) on a STAGE camera node.
+    """Deprecated: author a single VariantSet (kept for backward compatibility).
 
-    This adds a 'python' LOP node downstream of the camera LOP node to author
-    the VariantSet natively in the USD stage, surviving recooks.
+    Prefer :func:`create_camera_variant_author`, which authors every set with a
+    single node.  This wrapper delegates to it with one set.
 
     Args:
-        camera_path:      Path to the STAGE camera LOP node.
+        camera_path:      Path to the STAGE ``camera`` LOP node.
         variant_set_name: Name of the VariantSet (e.g. 'lens', 'angle').
-        variants:         List of CameraVariantSpec.
+        variants:         List of :class:`CameraVariantSpec`.
 
     Returns:
-        True if successful, False otherwise.
+        ``True`` if authoring succeeded.
     """
-    import hou  # noqa: PLC0415
-    node = _lop.get_node(camera_path)
-    if node is None:
-        _log.error("create_camera_variants: Node not found: " + camera_path)
-        return False
-
-    if node.type().name() != "camera":
-        _log.error("create_camera_variants: Node must be a STAGE 'camera' LOP, got: " + node.type().name())
-        return False
-
-    parent = node.parent()
-    prim_path = node.parm("primpath").eval() if node.parm("primpath") else "/" + node.name()
-
-    # Find the end of the variant chain and see if our specific node exists
-    node_name = f"variants_{node.name()}_{variant_set_name}"
-    python_lop = None
-    last_node = node
-    
-    # Traverse the chain of "variants_*" nodes downstream
-    curr = node
-    while True:
-        next_node = None
-        for conn in curr.outputConnections():
-            out_node = conn.outputNode()
-            if out_node.type().name() == "pythonscript" and out_node.name().startswith("variants_" + node.name()):
-                if out_node.name() == node_name:
-                    python_lop = out_node
-                next_node = out_node
-                break
-        if next_node is None:
-            break
-        curr = next_node
-        
-    last_node = curr
-
-    if python_lop is None:
-        # Create a new python LOP node
-        python_lop = _lop.create_node(parent, "pythonscript", node_name, force=True)
-        if python_lop is None:
-            return False
-        
-        # Wire it: last_node -> python_lop
-        _lop.connect(python_lop, last_node, input_index=0, output_index=0)
-        
-        # Set flags
-        python_lop.setDisplayFlag(True)
-        
-        # Layout
-        _lop.layout(parent)
-
-    # Format the variants data dictionary for python string code
-    variants_dict = {}
-    for var in variants:
-        has_xform = var.tx is not None or var.rx is not None
-        variants_dict[var.name] = {
-            "focal_length": var.focal_length,
-            "has_transform": has_xform,
-            "tx": var.tx or 0.0,
-            "ty": var.ty or 0.0,
-            "tz": var.tz or 0.0,
-            "rx": var.rx or 0.0,
-            "ry": var.ry or 0.0,
-            "rz": var.rz or 0.0,
-        }
-
-    # Build python code to set on the python LOP node
-    code_tmpl = (
-        "from pxr import Usd, UsdGeom, Gf\n\n"
-        "node = hou.pwd()\n"
-        "stage = node.editableStage()\n"
-        "stage.OverridePrim('__PRIM_PATH__')\n"
-        "prim = stage.GetPrimAtPath('__PRIM_PATH__')\n"
-        "if prim.IsValid():\n"
-        "    if prim.HasAttribute('focalLength'):\n"
-        "        prim.GetAttribute('focalLength').Clear()\n"
-        "    variants_data = __VARIANTS_DATA__\n"
-        "    has_any_transform = any(spec['has_transform'] for spec in variants_data.values())\n"
-        "    if has_any_transform:\n"
-        "        for op_name in ['xformOp:translate', 'xformOp:rotateXYZ', 'xformOpOrder']:\n"
-        "            if prim.HasAttribute(op_name):\n"
-        "                prim.GetAttribute(op_name).Clear()\n"
-        "    vsets = prim.GetVariantSets()\n"
-        "    vset = vsets.AddVariantSet('__VSET_NAME__')\n"
-        "    for var_name, spec in variants_data.items():\n"
-        "        vset.AddVariant(var_name)\n"
-        "        vset.SetVariantSelection(var_name)\n"
-        "        with vset.GetVariantEditContext():\n"
-        "            cam_prim = stage.GetPrimAtPath('__PRIM_PATH__')\n"
-        "            UsdGeom.Camera(cam_prim).GetFocalLengthAttr().Set(spec['focal_length'] / 100.0)\n"
-        "            if spec['has_transform']:\n"
-        "                xformable = UsdGeom.Xformable(cam_prim)\n"
-        "                translate_op = xformable.GetXformOp(UsdGeom.XformOp.TypeTranslate)\n"
-        "                if not translate_op:\n"
-        "                    translate_op = xformable.AddTranslateOp()\n"
-        "                translate_op.Set(Gf.Vec3d(spec['tx'], spec['ty'], spec['tz']))\n\n"
-        "                rotate_op = xformable.GetXformOp(UsdGeom.XformOp.TypeRotateXYZ)\n"
-        "                if not rotate_op:\n"
-        "                    rotate_op = xformable.AddRotateXYZOp()\n"
-        "                rotate_op.Set(Gf.Vec3d(spec['rx'], spec['ry'], spec['rz']))\n"
+    result = create_camera_variant_author(
+        camera_path, [VariantSetSpec(variant_set_name, tuple(variants))]
     )
-
-    code = (
-        code_tmpl
-        .replace("__PRIM_PATH__", prim_path)
-        .replace("__VSET_NAME__", variant_set_name)
-        .replace("__VARIANTS_DATA__", repr(variants_dict))
-    )
-
-    # Set parameter
-    python_lop.parm("python").set(code)
-    
-    # Cook it to apply changes
-    python_lop.cook(force=True)
-    _log.info("Created/updated VariantSet '" + variant_set_name + "' on camera " + camera_path)
-    return True
-
+    return result is not None
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.file.texture_parser import (
@@ -70,6 +70,7 @@ def scan_and_plan(
     recursive: bool = False,
     channels: Optional[Tuple[TextureChannel, ...]] = None,
     extensions: Optional[List[str]] = None,
+    auto_recurse: bool = True,
 ) -> ScanResult:
     """Scan *directory*, parse textures, and produce build plans (dry-run safe).
 
@@ -78,6 +79,10 @@ def scan_and_plan(
         recursive:  Recurse into subdirectories.
         channels:   Override which channels to plan (defaults to MVP set).
         extensions: Override texture extensions (passed to the parser).
+        auto_recurse: When ``recursive`` is ``False`` and the folder holds no
+            textures directly but has sub-folders that do (a library layout
+            like ``MSMC_Blobs/Blob_Dots/...``), automatically recurse so that
+            scanning the parent finds every per-sub-folder material.
 
     Returns:
         A :class:`ScanResult`.  Never raises for an empty folder -- it returns
@@ -92,6 +97,26 @@ def scan_and_plan(
 
     parser = TextureParser()
     infos = parser.parse_directory(d, extensions=extensions, recursive=recursive)
+
+    # Library layout: the chosen folder is a parent of per-material sub-folders
+    # (e.g. MSMC_Blobs/Blob_Dots/...).  If nothing was found at the top level
+    # but sub-folders exist, recurse automatically so the user does not have to
+    # open each sub-folder one by one.
+    if not infos and not recursive and auto_recurse:
+        has_subdirs = any(child.is_dir() for child in d.iterdir())
+        if has_subdirs:
+            _log.info("No textures at top level; recursing into sub-folders.")
+            recursive = True
+            infos = parser.parse_directory(
+                d, extensions=extensions, recursive=True
+            )
+
+    # Collapse jpg/tx/rat variants of the same map to ONE, preferring the
+    # Houdini-optimised .rat (then .tx) over the original source image.  Without
+    # this, re-scanning a folder after conversion would pick an arbitrary
+    # variant per channel (filesystem order) and the .mtlx would reference the
+    # unoptimised source instead of the .rat.
+    infos = _prefer_converted_infos(infos)
 
     unknowns = tuple(
         i.stem for i in infos if i.channel is TextureChannel.UNKNOWN
@@ -158,3 +183,68 @@ def format_dry_run(result: ScanResult) -> str:
         lines.append("")
         lines.append("Unrecognised (skipped): " + ", ".join(result.unknowns))
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Texture variant preference (.rat > .tx > source)
+# ---------------------------------------------------------------------------
+# When a folder has been converted, each logical map exists as several files,
+# e.g. ``MSMC_Blob_Dots_Basecolor.{jpg,tx,rat}``.  Houdini renders .rat
+# (tiled mip) most efficiently, so we prefer it; .tx next; the source last.
+
+#: Higher rank wins.  Anything not listed is treated as a raw *source* (rank 0).
+_VARIANT_RANK: Dict[str, int] = {"rat": 3, "tx": 2}
+
+#: Source raster extensions whose token may trail a legacy ``name.png.rat`` stem.
+_SOURCE_EXTS = frozenset({
+    "exr", "tif", "tiff", "png", "jpg", "jpeg", "hdr", "dpx", "tga", "bmp",
+})
+
+
+def _variant_rank(info: TextureInfo) -> int:
+    """Rank a texture variant; ``.rat`` highest, then ``.tx``, then source."""
+    return _VARIANT_RANK.get((info.extension or "").lower(), 0)
+
+
+def _variant_base(info: TextureInfo) -> str:
+    """Return an extension-agnostic grouping base for a texture.
+
+    Strips a trailing source-extension token so a legacy double-extension
+    ``foo.png.rat`` groups with the original ``foo.png`` rather than splitting
+    into its own material.
+    """
+    base = info.raw_name
+    head, _, tail = base.rpartition(".")
+    if head and tail in _SOURCE_EXTS:
+        base = head
+    return base
+
+
+def _prefer_converted_infos(
+    infos: List[TextureInfo],
+) -> List[TextureInfo]:
+    """Collapse duplicate variants of each map, preferring ``.rat`` then ``.tx``.
+
+    Args:
+        infos: Parsed texture infos (may contain jpg/tx/rat of the same map).
+
+    Returns:
+        One :class:`TextureInfo` per ``(folder, base-name, channel)``, keeping
+        the highest-ranked variant.  Input order is otherwise preserved, so the
+        UI listing stays stable.
+    """
+    chosen: Dict[Tuple[str, str, object], TextureInfo] = {}
+    order: List[Tuple[str, str, object]] = []
+    for info in infos:
+        key = (
+            info.path.parent.as_posix().lower(),
+            _variant_base(info),
+            info.channel,
+        )
+        current = chosen.get(key)
+        if current is None:
+            chosen[key] = info
+            order.append(key)
+        elif _variant_rank(info) > _variant_rank(current):
+            chosen[key] = info
+    return [chosen[k] for k in order]

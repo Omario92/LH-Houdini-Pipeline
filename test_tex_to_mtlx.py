@@ -198,6 +198,67 @@ check("plan.to_dict() is JSON-serialisable", _to_dict_serialisable)
 
 
 # ---------------------------------------------------------------------------
+# Variant preference: .rat > .tx > source (post-conversion folders)
+# ---------------------------------------------------------------------------
+
+print("\n=== Variant preference (.rat > .tx > source) ===")
+
+def _conv_fixture(exts):
+    d = tempfile.mkdtemp(prefix="tex2mtlx_conv_")
+    for ch in ("Basecolor", "Normal", "Roughness"):
+        for e in exts:
+            open(os.path.join(d, "MSMC_Blob_Dots_" + ch + "." + e), "w").close()
+    return d
+
+def _prefers_rat():
+    d = _conv_fixture(["jpg", "tx", "rat"])
+    res = tool_core.scan_and_plan(d)
+    assert len(res.plans) == 1, res.summary()
+    assert len(res.infos) == 3, "variants not collapsed: " + res.summary()
+    for img in res.plans[0].images:
+        assert img.file_path.lower().endswith(".rat"), img.file_path
+check("jpg+tx+rat -> every channel uses .rat", _prefers_rat)
+
+def _prefers_tx_when_no_rat():
+    d = _conv_fixture(["jpg", "tx"])
+    res = tool_core.scan_and_plan(d)
+    for img in res.plans[0].images:
+        assert img.file_path.lower().endswith(".tx"), img.file_path
+check("jpg+tx (no rat) -> every channel uses .tx", _prefers_tx_when_no_rat)
+
+def _source_only_still_scans():
+    d = _conv_fixture(["jpg"])
+    res = tool_core.scan_and_plan(d)
+    assert len(res.plans) == 1 and len(res.infos) == 3, res.summary()
+check("source-only folder still scans (1 material)", _source_only_still_scans)
+
+
+print("\n=== Library layout (auto-recurse parent folder) ===")
+
+def _auto_recurse_parent():
+    parent = tempfile.mkdtemp(prefix="tex2mtlx_lib_")
+    for blob in ("Blob_Dots", "Blob_Marble"):
+        sub = os.path.join(parent, blob)
+        os.makedirs(sub)
+        for ch in ("Basecolor", "Normal", "Roughness"):
+            for e in ("jpg", "rat"):
+                open(os.path.join(sub, "MSMC_" + blob + "_" + ch + "." + e), "w").close()
+    res = tool_core.scan_and_plan(parent)            # no recursive flag
+    assert len(res.plans) == 2, "auto-recurse failed: " + res.summary()
+    for img in (i for p in res.plans for i in p.images):
+        assert img.file_path.lower().endswith(".rat"), img.file_path
+check("parent of material sub-folders auto-recurses", _auto_recurse_parent)
+
+def _auto_recurse_can_be_disabled():
+    parent = tempfile.mkdtemp(prefix="tex2mtlx_lib2_")
+    sub = os.path.join(parent, "Blob_Dots"); os.makedirs(sub)
+    open(os.path.join(sub, "MSMC_Blob_Dots_Basecolor.jpg"), "w").close()
+    res = tool_core.scan_and_plan(parent, auto_recurse=False)
+    assert len(res.plans) == 0, "auto_recurse=False should not recurse"
+check("auto_recurse=False keeps top-level-only behaviour", _auto_recurse_can_be_disabled)
+
+
+# ---------------------------------------------------------------------------
 # Houdini-only surfaces (guarded)
 # ---------------------------------------------------------------------------
 
