@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any, Dict, Generator, List, Optional
 
 import requests
@@ -21,6 +23,147 @@ class LLMError(Exception):
     """Raised for any API call failure, authorization error, or malformed response."""
 
 
+@dataclass
+class ToolCall:
+    """A single native function/tool call requested by the model."""
+    id: str
+    name: str
+    arguments: Dict[str, Any]
+
+
+@dataclass
+class AgentResponse:
+    """Result of a native function-calling turn: free text and/or tool calls."""
+    text: str = ""
+    tool_calls: List[ToolCall] = field(default_factory=list)
+
+    @property
+    def has_tool_calls(self) -> bool:
+        return bool(self.tool_calls)
+
+
+# ---------------------------------------------------------------------------
+# Tool-schema formatters (AITool -> provider-native tool definition)
+# ---------------------------------------------------------------------------
+
+def _tools_anthropic(tools: List[Any]) -> List[Dict[str, Any]]:
+    return [{"name": t.name, "description": t.description, "input_schema": t.schema} for t in tools]
+
+
+def _tools_openai(tools: List[Any]) -> List[Dict[str, Any]]:
+    return [{"type": "function",
+             "function": {"name": t.name, "description": t.description, "parameters": t.schema}}
+            for t in tools]
+
+
+def _tools_gemini(tools: List[Any]) -> List[Dict[str, Any]]:
+    return [{"functionDeclarations": [
+        {"name": t.name, "description": t.description, "parameters": t.schema} for t in tools]}]
+
+
+# ---------------------------------------------------------------------------
+# Internal history -> provider message lists
+# Internal roles: "user" | "assistant"(+optional tool_calls) | "tool"(result)
+# ---------------------------------------------------------------------------
+
+def _user_content_anthropic(msg: Dict[str, Any]) -> Any:
+    img = msg.get("image_b64")
+    text = msg.get("content", "")
+    if img:
+        return [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img}},
+                {"type": "text", "text": text}]
+    return text
+
+
+def _internal_to_anthropic(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            continue
+        if role == "user":
+            out.append({"role": "user", "content": _user_content_anthropic(m)})
+        elif role == "assistant":
+            tcs = m.get("tool_calls")
+            if tcs:
+                blocks: List[Dict[str, Any]] = []
+                if m.get("content"):
+                    blocks.append({"type": "text", "text": m["content"]})
+                for tc in tcs:
+                    blocks.append({"type": "tool_use", "id": tc["id"], "name": tc["name"],
+                                   "input": tc.get("arguments", {})})
+                out.append({"role": "assistant", "content": blocks})
+            else:
+                out.append({"role": "assistant", "content": m.get("content", "")})
+        elif role == "tool":
+            out.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": m.get("tool_call_id", ""),
+                 "content": m.get("content", "")}]})
+    return out
+
+
+def _internal_to_openai(messages: List[Dict[str, Any]], system_prompt: Optional[str]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if system_prompt:
+        out.append({"role": "system", "content": system_prompt})
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            continue
+        if role == "user":
+            img = m.get("image_b64")
+            if img:
+                out.append({"role": "user", "content": [
+                    {"type": "text", "text": m.get("content", "")},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + img}}]})
+            else:
+                out.append({"role": "user", "content": m.get("content", "")})
+        elif role == "assistant":
+            tcs = m.get("tool_calls")
+            if tcs:
+                out.append({"role": "assistant", "content": m.get("content") or None,
+                            "tool_calls": [
+                                {"id": tc["id"], "type": "function",
+                                 "function": {"name": tc["name"],
+                                              "arguments": json.dumps(tc.get("arguments", {}))}}
+                                for tc in tcs]})
+            else:
+                out.append({"role": "assistant", "content": m.get("content", "")})
+        elif role == "tool":
+            out.append({"role": "tool", "tool_call_id": m.get("tool_call_id", ""),
+                        "content": m.get("content", "")})
+    return out
+
+
+def _internal_to_gemini(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            continue
+        if role == "user":
+            parts: List[Dict[str, Any]] = [{"text": m.get("content", "")}]
+            if m.get("image_b64"):
+                parts.append({"inlineData": {"mimeType": "image/png", "data": m["image_b64"]}})
+            out.append({"role": "user", "parts": parts})
+        elif role == "assistant":
+            tcs = m.get("tool_calls")
+            if tcs:
+                parts = []
+                if m.get("content"):
+                    parts.append({"text": m["content"]})
+                for tc in tcs:
+                    parts.append({"functionCall": {"name": tc["name"], "args": tc.get("arguments", {})}})
+                out.append({"role": "model", "parts": parts})
+            else:
+                out.append({"role": "model", "parts": [{"text": m.get("content", "")}]})
+        elif role == "tool":
+            out.append({"role": "user", "parts": [
+                {"functionResponse": {"name": m.get("name", ""),
+                                      "response": {"result": m.get("content", "")}}}]})
+    return out
+
+
 class LLMClient(ABC):
     """Abstract base class for all LLM clients."""
 
@@ -30,6 +173,24 @@ class LLMClient(ABC):
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        # Holds the in-flight streaming response so a cancel can close it and
+        # unblock a stuck read (e.g. a model that hangs without emitting tokens).
+        self._active_response = None
+
+    def abort(self) -> None:
+        """Best-effort: close any in-flight streaming response.
+
+        Closing the socket makes the blocking ``iter_lines()`` in the worker
+        thread raise immediately, so a stuck/"thinking-forever" request can be
+        cancelled instantly instead of waiting for the 60s timeout.
+        """
+        resp = getattr(self, "_active_response", None)
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+            self._active_response = None
 
     @abstractmethod
     def chat(self, messages: List[Dict[str, str]], system_prompt: Optional[str] = None) -> str:
@@ -62,6 +223,15 @@ class LLMClient(ABC):
             LLMError: If the connection fails.
         """
         pass
+
+    def chat_agentic(self, messages: List[Dict[str, Any]], system_prompt: Optional[str] = None,
+                     tools: Optional[List[Any]] = None) -> "AgentResponse":
+        """Native function-calling turn (non-streaming).
+
+        Returns an :class:`AgentResponse` carrying assistant text and/or a list
+        of :class:`ToolCall`. Default implementation: no tool support (text only).
+        """
+        return AgentResponse(text=self.chat(messages, system_prompt), tool_calls=[])
 
 
 class AnthropicClient(LLMClient):
@@ -140,6 +310,7 @@ class AnthropicClient(LLMClient):
         headers, body = self._build_request(messages, system_prompt, stream=True)
         try:
             response = requests.post(self.url, headers=headers, json=body, stream=True, timeout=60)
+            self._active_response = response
             if response.status_code != 200:
                 raise LLMError(f"Anthropic API error ({response.status_code}): {response.text}")
             
@@ -163,6 +334,44 @@ class AnthropicClient(LLMClient):
         except Exception as e:
             if not isinstance(e, LLMError):
                 raise LLMError(f"Anthropic streaming failed: {e}") from e
+            raise
+
+    def chat_agentic(self, messages: List[Dict[str, Any]], system_prompt: Optional[str] = None,
+                     tools: Optional[List[Any]] = None) -> "AgentResponse":
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        body: Dict[str, Any] = {
+            "model": self.model,
+            "messages": _internal_to_anthropic(messages),
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+        }
+        if system_prompt:
+            body["system"] = system_prompt
+        if tools:
+            body["tools"] = _tools_anthropic(tools)
+        try:
+            response = requests.post(self.url, headers=headers, json=body, timeout=120)
+            if response.status_code != 200:
+                raise LLMError(f"Anthropic API error ({response.status_code}): {response.text}")
+            data = response.json()
+            text_parts: List[str] = []
+            calls: List[ToolCall] = []
+            for block in data.get("content", []):
+                btype = block.get("type")
+                if btype == "text":
+                    text_parts.append(block.get("text", ""))
+                elif btype == "tool_use":
+                    calls.append(ToolCall(id=block.get("id", uuid.uuid4().hex),
+                                          name=block.get("name", ""),
+                                          arguments=block.get("input", {}) or {}))
+            return AgentResponse(text="".join(text_parts), tool_calls=calls)
+        except Exception as e:
+            if not isinstance(e, LLMError):
+                raise LLMError(f"Anthropic agentic request failed: {e}") from e
             raise
 
 
@@ -237,6 +446,7 @@ class OpenAICompatibleClient(LLMClient):
         headers, body = self._build_request(messages, system_prompt, stream=True)
         try:
             response = requests.post(self.url, headers=headers, json=body, stream=True, timeout=60)
+            self._active_response = response
             if response.status_code != 200:
                 raise LLMError(f"API error ({response.status_code}): {response.text}")
             
@@ -263,6 +473,41 @@ class OpenAICompatibleClient(LLMClient):
                 raise LLMError(f"API streaming failed: {e}") from e
             raise
 
+    def chat_agentic(self, messages: List[Dict[str, Any]], system_prompt: Optional[str] = None,
+                     tools: Optional[List[Any]] = None) -> "AgentResponse":
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        body: Dict[str, Any] = {
+            "model": self.model,
+            "messages": _internal_to_openai(messages, system_prompt),
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        if tools:
+            body["tools"] = _tools_openai(tools)
+        try:
+            response = requests.post(self.url, headers=headers, json=body, timeout=120)
+            if response.status_code != 200:
+                raise LLMError(f"API error ({response.status_code}): {response.text}")
+            data = response.json()
+            message = data["choices"][0]["message"]
+            calls: List[ToolCall] = []
+            for tc in message.get("tool_calls") or []:
+                fn = tc.get("function", {})
+                raw_args = fn.get("arguments", "{}")
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                except Exception:
+                    args = {}
+                calls.append(ToolCall(id=tc.get("id", uuid.uuid4().hex),
+                                      name=fn.get("name", ""), arguments=args))
+            return AgentResponse(text=message.get("content") or "", tool_calls=calls)
+        except Exception as e:
+            if not isinstance(e, LLMError):
+                raise LLMError(f"API agentic request failed: {e}") from e
+            raise
+
 
 class OpenAIClient(OpenAICompatibleClient):
     """Client wrapper for OpenAI API (GPT-4/GPT-5)."""
@@ -282,6 +527,22 @@ class OllamaClient(OpenAICompatibleClient):
 class LMStudioClient(OpenAICompatibleClient):
     """Client wrapper for Local LM Studio API using OpenAI-compatibility endpoint."""
     pass
+
+
+class OpenRouterClient(OpenAICompatibleClient):
+    """Client for OpenRouter (https://openrouter.ai) -- an OpenAI-compatible
+    aggregator giving access to 400+ models via 'provider/model' slugs.
+
+    Adds OpenRouter's optional ranking headers (HTTP-Referer / X-Title) on top
+    of the standard Bearer auth; everything else is OpenAI-compatible.
+    """
+
+    def _build_request(self, messages, system_prompt, stream):
+        headers, body = super()._build_request(messages, system_prompt, stream)
+        # Optional attribution headers (recommended, not required by OpenRouter).
+        headers.setdefault("HTTP-Referer", "https://github.com/lh-houdini-pipeline")
+        headers.setdefault("X-Title", "LH Houdini AI Assistant")
+        return headers, body
 
 
 class GeminiClient(LLMClient):
@@ -376,6 +637,7 @@ class GeminiClient(LLMClient):
         headers, body = self._build_request(messages, system_prompt)
         try:
             response = requests.post(url, headers=headers, json=body, stream=True, timeout=60)
+            self._active_response = response
             if response.status_code != 200:
                 raise LLMError(f"Gemini API error ({response.status_code}): {response.text}")
             
@@ -425,6 +687,42 @@ class GeminiClient(LLMClient):
                 raise LLMError(f"Gemini streaming failed: {e}") from e
             raise
 
+    def chat_agentic(self, messages: List[Dict[str, Any]], system_prompt: Optional[str] = None,
+                     tools: Optional[List[Any]] = None) -> "AgentResponse":
+        url = self._build_url(stream=False)
+        headers = {"Content-Type": "application/json"}
+        body: Dict[str, Any] = {
+            "contents": _internal_to_gemini(messages),
+            "generationConfig": {"temperature": self.temperature, "maxOutputTokens": self.max_tokens},
+        }
+        if system_prompt:
+            body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+        if tools:
+            body["tools"] = _tools_gemini(tools)
+        try:
+            response = requests.post(url, headers=headers, json=body, timeout=120)
+            if response.status_code != 200:
+                raise LLMError(f"Gemini API error ({response.status_code}): {response.text}")
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                return AgentResponse(text="", tool_calls=[])
+            parts = candidates[0].get("content", {}).get("parts", [])
+            text_parts: List[str] = []
+            calls: List[ToolCall] = []
+            for i, part in enumerate(parts):
+                if "text" in part:
+                    text_parts.append(part.get("text", ""))
+                if "functionCall" in part:
+                    fc = part["functionCall"]
+                    calls.append(ToolCall(id=f"gemini-{i}-{uuid.uuid4().hex[:6]}",
+                                          name=fc.get("name", ""), arguments=fc.get("args", {}) or {}))
+            return AgentResponse(text="".join(text_parts), tool_calls=calls)
+        except Exception as e:
+            if not isinstance(e, LLMError):
+                raise LLMError(f"Gemini agentic request failed: {e}") from e
+            raise
+
 
 def create_client(provider: str, api_key: str, url: str, model: str, temperature: float = 0.2, max_tokens: int = 4096) -> LLMClient:
     """Factory function to instantiate concrete client implementations based on the *provider*."""
@@ -436,6 +734,8 @@ def create_client(provider: str, api_key: str, url: str, model: str, temperature
         return OpenAIClient(api_key, url, model, temperature, max_tokens)
     elif provider_lower == "xai":
         return xAIClient(api_key, url, model, temperature, max_tokens)
+    elif provider_lower == "openrouter":
+        return OpenRouterClient(api_key, url, model, temperature, max_tokens)
     elif provider_lower == "gemini":
         return GeminiClient(api_key, url, model, temperature, max_tokens)
     elif provider_lower == "ollama":

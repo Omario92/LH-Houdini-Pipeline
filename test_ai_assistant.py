@@ -56,17 +56,26 @@ temp_dir = tempfile.mkdtemp()
 def _test_config_manager() -> None:
     cfg_mgr = AssistantConfigManager(config_dir=Path(temp_dir))
     
-    # Assert defaults loaded
+    # Assert defaults loaded (current model IDs)
     assert cfg_mgr.get_active_provider() == "anthropic"
-    assert cfg_mgr.get_active_model() == "claude-3-5-sonnet-20241022"
+    assert cfg_mgr.get_active_model() == "claude-sonnet-4-6"
     assert cfg_mgr.get_active_url() == "https://api.anthropic.com/v1/messages"
-    
+
+    # OpenRouter provider is available with the OpenAI-compatible endpoint
+    assert "openrouter" in cfg_mgr.config.get("providers", {})
+    cfg_mgr.save({"active_provider": "openrouter"})
+    assert cfg_mgr.get_active_url() == "https://openrouter.ai/api/v1/chat/completions"
+    assert cfg_mgr.get_active_model() == "anthropic/claude-sonnet-4.6"
+
     # Test switching provider
     cfg_mgr.save({"active_provider": "openai"})
     assert cfg_mgr.get_active_provider() == "openai"
-    assert cfg_mgr.get_active_model() == "gpt-4o"
-    
-    # Test api key fallback
+    assert cfg_mgr.get_active_model() == "gpt-5.5"
+
+    # API key: nested save persists + round-trips; env var is the fallback
+    cfg_mgr.save({"providers": {"openai": {"api_key": "saved-inline-key"}}})
+    assert cfg_mgr.get_api_key("openai") == "saved-inline-key"
+    cfg_mgr.save({"providers": {"openai": {"api_key": ""}}})
     with patch.dict(os.environ, {"OPENAI_API_KEY": "env-secret-key"}):
         key = cfg_mgr.get_api_key("openai")
         assert key == "env-secret-key", f"Expected env-secret-key, got {key}"
@@ -110,7 +119,112 @@ def _test_client_factory() -> None:
     c = create_client("gemini", "key", "url", "model")
     assert isinstance(c, GeminiClient)
 
+    # OpenRouter (OpenAI-compatible aggregator)
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.core.client import OpenRouterClient
+    c = create_client("openrouter", "key", "https://openrouter.ai/api/v1/chat/completions", "anthropic/claude-sonnet-4.6")
+    assert isinstance(c, OpenRouterClient)
+    headers, body = c._build_request([{"role": "user", "content": "hi"}], None, stream=False)
+    assert headers["Authorization"] == "Bearer key"
+    assert "HTTP-Referer" in headers and "X-Title" in headers
+
 check("create_client factory", _test_client_factory)
+
+
+# ---------------------------------------------------------------------------
+# Native function-calling tests
+# ---------------------------------------------------------------------------
+
+print("\n=== Native Function-Calling Tests ===")
+
+
+class _DummyTool:
+    name = "create_node"
+    description = "Create a node"
+    schema = {"type": "object", "properties": {"node_type": {"type": "string"}}}
+
+
+def _fake_response(payload, capture=None):
+    class R:
+        status_code = 200
+        def json(self):
+            return payload
+    def post(url, headers=None, json=None, timeout=None, **kw):
+        if capture is not None:
+            capture["url"] = url
+            capture["body"] = json
+        return R()
+    return post
+
+
+def _test_agentic_openai_toolcall() -> None:
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.core.client import (
+        OpenAICompatibleClient, AgentResponse)
+    cap = {}
+    payload = {"choices": [{"message": {"content": "", "tool_calls": [
+        {"id": "call_1", "type": "function",
+         "function": {"name": "create_node",
+                      "arguments": '{"parent_path": "/obj", "node_type": "geo"}'}}]}}]}
+    with patch("requests.post", side_effect=_fake_response(payload, cap)):
+        c = OpenAICompatibleClient("key", "url", "model")
+        resp = c.chat_agentic([{"role": "user", "content": "make a geo"}], "SYS", tools=[_DummyTool()])
+    assert isinstance(resp, AgentResponse)
+    assert resp.has_tool_calls and len(resp.tool_calls) == 1
+    tc = resp.tool_calls[0]
+    assert tc.name == "create_node"
+    assert tc.arguments == {"parent_path": "/obj", "node_type": "geo"}
+    assert "tools" in cap["body"]
+    assert cap["body"]["tools"][0]["function"]["name"] == "create_node"
+
+check("OpenAI/OpenRouter native tool-call parse", _test_agentic_openai_toolcall)
+
+
+def _test_agentic_openai_text() -> None:
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.core.client import OpenAICompatibleClient
+    payload = {"choices": [{"message": {"content": "Final answer."}}]}
+    with patch("requests.post", side_effect=_fake_response(payload)):
+        c = OpenAICompatibleClient("key", "url", "model")
+        resp = c.chat_agentic([{"role": "user", "content": "hi"}], "SYS", tools=[_DummyTool()])
+    assert resp.text == "Final answer."
+    assert not resp.has_tool_calls
+
+check("OpenAI native text (no tool calls)", _test_agentic_openai_text)
+
+
+def _test_agentic_anthropic_tooluse() -> None:
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.core.client import AnthropicClient
+    cap = {}
+    payload = {"content": [
+        {"type": "text", "text": "Sure."},
+        {"type": "tool_use", "id": "tu_1", "name": "set_parm",
+         "input": {"node_path": "/obj/geo1", "parm_values": {"tx": 1}}}]}
+    with patch("requests.post", side_effect=_fake_response(payload, cap)):
+        c = AnthropicClient("key", "url", "model")
+        resp = c.chat_agentic([{"role": "user", "content": "move it"}], "SYS", tools=[_DummyTool()])
+    assert resp.text == "Sure."
+    assert resp.tool_calls[0].name == "set_parm"
+    assert resp.tool_calls[0].arguments["parm_values"] == {"tx": 1}
+    assert cap["body"]["tools"][0]["input_schema"] == _DummyTool.schema
+
+check("Anthropic native tool_use parse", _test_agentic_anthropic_tooluse)
+
+
+def _test_agentic_message_roundtrip() -> None:
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.core.client import _internal_to_openai
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "name": "create_node", "arguments": {"x": 1}}]},
+        {"role": "tool", "tool_call_id": "c1", "name": "create_node", "content": '{"success": true}'},
+    ]
+    msgs = _internal_to_openai(history, "SYS")
+    assert msgs[0] == {"role": "system", "content": "SYS"}
+    assert msgs[1]["role"] == "user"
+    assert msgs[2]["role"] == "assistant"
+    assert msgs[2]["tool_calls"][0]["function"]["name"] == "create_node"
+    assert json.loads(msgs[2]["tool_calls"][0]["function"]["arguments"]) == {"x": 1}
+    assert msgs[3] == {"role": "tool", "tool_call_id": "c1", "content": '{"success": true}'}
+
+check("Native history -> OpenAI message round-trip", _test_agentic_message_roundtrip)
 
 
 @patch("requests.post")
@@ -407,6 +521,7 @@ def _test_hda_scaffold_tool_parameters() -> None:
     
     # Create mock hou module
     mock_hou = MagicMock()
+    mock_hou.__name__ = "hou"  # shiboken import hook probes module.__name__
     mock_hou.stringParmType.FileReference = "FileReference"
     mock_hou.scriptLanguage.Python = "Python"
     
@@ -500,6 +615,7 @@ def _test_hda_scaffold_tool_execute(
     from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.node_tools import GenerateHdaScaffoldTool
     
     mock_hou = MagicMock()
+    mock_hou.__name__ = "hou"  # shiboken import hook probes module.__name__
     mock_hou.getenv.return_value = "E:/temp_hip"
     
     mock_subnet = MagicMock()
@@ -630,6 +746,52 @@ def _test_mcp_integration() -> None:
     assert server.is_running() is False
 
 check("MCP Client/Server TCP integration", _test_mcp_integration)
+
+
+def _test_mcp_server_fail_closed() -> None:
+    """REGRESSION: a modifying tool must be REJECTED when no approval callback
+    is wired (fail-closed). Guards against unauthenticated socket RCE."""
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.server import McpTcpServer
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.base import AITool
+
+    executed = []
+
+    class DangerTool(AITool):
+        @property
+        def name(self) -> str:
+            return "run_python_snippet"
+        @property
+        def description(self) -> str:
+            return "arbitrary code"
+        @property
+        def schema(self) -> dict:
+            return {"type": "object"}
+        def execute(self, arguments: dict) -> dict:
+            executed.append(arguments)
+            return {"success": True}
+
+    server = McpTcpServer()
+    server._tools = [DangerTool()]
+    server.use_thread_dispatch = False
+    server.approval_callback = None  # <-- the dangerous default
+
+    sent = []
+    class FakeConn:
+        def sendall(self, data) -> None:
+            sent.append(data)
+
+    server._handle_tools_call(FakeConn(), 7,
+                              {"name": "run_python_snippet", "arguments": {"code": "x = 1"}})
+
+    assert not executed, "FAIL-OPEN: modifying tool executed without an approval gate!"
+    assert sent, "no JSON-RPC response was sent"
+    resp = json.loads(sent[-1].decode("utf-8"))
+    result = resp.get("result", {})
+    assert result.get("isError") is True, "rejection should be flagged isError"
+    assert "reject" in result["content"][0]["text"].lower(), "expected a rejection message"
+
+
+check("MCP server fail-closed (no approval => reject)", _test_mcp_server_fail_closed)
 
 
 def _test_pipeline_tools() -> None:

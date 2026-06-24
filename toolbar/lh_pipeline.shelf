@@ -9,6 +9,7 @@
     <memberTool name="lh_cache_manager"/>
     <memberTool name="lh_asset_ingest"/>
     <memberTool name="lh_lookdev_builder"/>
+    <memberTool name="lh_ai_assistant"/>
   </toolshelf>
 
   <tool name="lh_project_manager" label="Project Mgr" icon="MISC_digital_asset">
@@ -63,6 +64,14 @@ launch()
     <helpText><![CDATA[One-click lookdev: asset + light rig + turntable + calibration.]]></helpText>
     <script scriptType="python"><![CDATA[
 from lh_houdini_pipeline.tools.lookdev_builder import launch
+launch()
+]]></script>
+  </tool>
+
+  <tool name="lh_ai_assistant" label="AI Assistant" icon="MISC_generic">
+    <helpText><![CDATA[LLM chat assistant: scene context, USD/HDA codegen, agentic tools (approval-gated), optional MCP.]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.houdini_ai_assistant import launch
 launch()
 ]]></script>
   </tool>

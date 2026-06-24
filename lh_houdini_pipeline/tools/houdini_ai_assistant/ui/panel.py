@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from typing import Optional, Any, List
+from typing import Any, Dict, List, Optional
 
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.houdini_ai_assistant.config import AssistantConfigManager
@@ -57,6 +57,8 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         self._current_worker: Optional[LLMWorker] = None
         self._current_streaming_text = ""
         self._agent_steps = 0  # Tool loop safety counter
+        self._stopped = False  # set True when the artist hits Stop
+        self._last_tool_sig = None  # detect a model repeating the same action
 
         self._build_ui()
         self._load_config_to_ui()
@@ -80,6 +82,7 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
 
         # 1. Top Panel Configuration Zone
         layout.addLayout(self._build_top_config())
+        layout.addLayout(self._build_api_key_row())
 
         # 2. Main Tabs (Chat / Settings / MCP)
         self._tabs = QtWidgets.QTabWidget()
@@ -130,6 +133,59 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         row.addWidget(self._mode_combo, 2)
 
         return row
+
+    def _build_api_key_row(self) -> QtWidgets.QLayout:
+        """API key entry for the active provider (masked, saved locally)."""
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(QtWidgets.QLabel("API Key:"))
+
+        self._api_key_edit = QtWidgets.QLineEdit()
+        self._api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self._api_key_edit.setPlaceholderText("Paste the provider API key, or set its environment variable")
+        self._api_key_edit.returnPressed.connect(self._on_save_api_key)
+        row.addWidget(self._api_key_edit, 1)
+
+        self._show_key_cb = QtWidgets.QCheckBox("Show")
+        self._show_key_cb.toggled.connect(self._on_toggle_key_visibility)
+        row.addWidget(self._show_key_cb)
+
+        self._save_key_btn = QtWidgets.QPushButton("Save Key")
+        self._save_key_btn.clicked.connect(self._on_save_api_key)
+        row.addWidget(self._save_key_btn)
+        return row
+
+    def _on_toggle_key_visibility(self, show: bool) -> None:
+        mode = QtWidgets.QLineEdit.Normal if show else QtWidgets.QLineEdit.Password
+        self._api_key_edit.setEchoMode(mode)
+
+    def _load_api_key_field(self) -> None:
+        """Show the stored key for the active provider (or hint at its env var)."""
+        provider = self.config_manager.get_active_provider()
+        p_cfg = self.config_manager.config.get(f"providers.{provider}", {}) or {}
+        stored = p_cfg.get("api_key", "")
+        env_var = p_cfg.get("api_key_env", "")
+
+        self._api_key_edit.blockSignals(True)
+        self._api_key_edit.setText(stored)
+        self._api_key_edit.blockSignals(False)
+
+        if not stored and env_var and os.environ.get(env_var):
+            self._api_key_edit.setPlaceholderText(f"(using ${env_var} from environment)")
+        elif env_var:
+            self._api_key_edit.setPlaceholderText(f"Paste key for {provider}, or set ${env_var}")
+        else:
+            self._api_key_edit.setPlaceholderText(f"Paste API key for {provider}")
+
+    def _on_save_api_key(self) -> None:
+        """Persist the entered key under the active provider (nested write)."""
+        provider = self.config_manager.get_active_provider()
+        key = self._api_key_edit.text().strip()
+        # Nested dict so the deep-merge targets providers.<provider>.api_key
+        # without clobbering sibling fields (and so get() can read it back).
+        self.config_manager.save({"providers": {provider: {"api_key": key}}})
+        masked = "set" if key else "cleared"
+        self._set_status(f"API key {masked} for {provider}", "done")
 
     def _build_chat_tab(self) -> None:
         """Construct the main chat view inside the Chat Tab."""
@@ -217,7 +273,24 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         
         self._share_viewport_cb = QtWidgets.QCheckBox("Include Viewport Screenshot")
         self._share_viewport_cb.setChecked(False)
-        
+
+        self._native_tools_cb = QtWidgets.QCheckBox("Native tools")
+        self._native_tools_cb.setChecked(True)
+        self._native_tools_cb.setToolTip(
+            "Use the provider's native function-calling API (recommended).\n"
+            "Uncheck to fall back to the legacy JSON-in-text tool protocol."
+        )
+        self._native_tools_cb.toggled.connect(self._on_native_tools_toggled)
+
+        self._max_steps_spin = QtWidgets.QSpinBox()
+        self._max_steps_spin.setRange(1, 50)
+        self._max_steps_spin.setValue(12)
+        self._max_steps_spin.setToolTip(
+            "Max consecutive tool calls the agent may chain before stopping.\n"
+            "Raise this for multi-step builds; lower it to keep the model on a leash."
+        )
+        self._max_steps_spin.valueChanged.connect(self._on_max_steps_changed)
+
         self._context_chip = QtWidgets.QLabel("No Selection")
         self._context_chip.setStyleSheet(
             "color: #9aa0a6; background: #232323; padding: 2px 6px; "
@@ -226,6 +299,9 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         
         options_row.addWidget(self._share_context_cb)
         options_row.addWidget(self._share_viewport_cb)
+        options_row.addWidget(self._native_tools_cb)
+        options_row.addWidget(QtWidgets.QLabel("Max tool steps:"))
+        options_row.addWidget(self._max_steps_spin)
         options_row.addStretch()
         options_row.addWidget(self._context_chip)
         layout.addLayout(options_row)
@@ -243,6 +319,12 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         self._send_btn.setObjectName("primaryBtn")
         self._send_btn.clicked.connect(self._on_send)
         row.addWidget(self._send_btn)
+
+        self._stop_btn = QtWidgets.QPushButton("Stop")
+        self._stop_btn.setObjectName("warnBtn")
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.clicked.connect(self._on_stop)
+        row.addWidget(self._stop_btn)
 
         self._clear_btn = QtWidgets.QPushButton("Clear")
         self._clear_btn.clicked.connect(self._on_clear)
@@ -305,6 +387,19 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         # Setup initial prompt
         self._on_mode_changed()
 
+        # Native function-calling toggle
+        self._native_tools_cb.blockSignals(True)
+        self._native_tools_cb.setChecked(bool(self.config_manager.config.get("native_tools", True)))
+        self._native_tools_cb.blockSignals(False)
+
+        # Agent step cap
+        self._max_steps_spin.blockSignals(True)
+        self._max_steps_spin.setValue(int(self.config_manager.config.get("max_agent_steps", 12)))
+        self._max_steps_spin.blockSignals(False)
+
+        # Show the active provider's API key
+        self._load_api_key_field()
+
         # Initialize MCP client tools if active
         if self._mcp_cb.isChecked():
             self.update_mcp_tools()
@@ -357,13 +452,15 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         new_provider = self._provider_combo.currentText()
         self.config_manager.save({"active_provider": new_provider})
         self._update_models_dropdown()
+        self._load_api_key_field()
         self._set_status(f"Switched provider to {new_provider}", "info")
 
     def _on_model_changed(self) -> None:
         """Fires when the active LLM model dropdown is changed."""
         provider = self.config_manager.get_active_provider()
         new_model = self._model_combo.currentText()
-        self.config_manager.save({f"providers.{provider}.active_model": new_model})
+        # Nested write so the dotted path persists and reads back via get().
+        self.config_manager.save({"providers": {provider: {"active_model": new_model}}})
         self._set_status(f"Switched model to {new_model}", "info")
 
     def _on_mode_changed(self) -> None:
@@ -379,6 +476,14 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         self._chat_history.clear()
         self._chat_history.append_message("system", f"Active Mode set to **{mode}**.")
         self._set_status(f"Switched mode to {mode}", "info")
+
+    def _on_max_steps_changed(self, value: int) -> None:
+        """Persist the agent step cap."""
+        self.config_manager.save({"max_agent_steps": int(value)})
+
+    def _on_native_tools_toggled(self, on: bool) -> None:
+        """Persist the native function-calling preference."""
+        self.config_manager.save({"native_tools": bool(on)})
 
     def _on_system_prompt_changed(self) -> None:
         """Sync the system prompt editor with assistant state."""
@@ -509,6 +614,8 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
 
         self._input_edit.clear()
         self._agent_steps = 0  # Reset tool loops
+        self._stopped = False
+        self._last_tool_sig = None
 
         # Build formatted prompt content (with context if checked)
         formatted_content = user_text
@@ -543,30 +650,52 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
 
     def _run_assistant_step(self) -> None:
         """Query the LLM client with active message history asynchronously."""
-        # Loop safety guard
-        if self._agent_steps >= 5:
+        if self._stopped:
+            return
+        # Loop safety guard (configurable; raise 'Max tool steps' for big builds)
+        limit = max(1, int(self._max_steps_spin.value()))
+        if self._agent_steps >= limit:
             self._chat_history.append_message(
                 "system",
-                "⚠️ Safety Halt: Maximum consecutive tool call loops (5) reached. Halting loop to prevent recursion."
+                f"⚠️ Safety halt: reached the max of {limit} consecutive tool calls. "
+                "Type 'continue' to keep going, or raise 'Max tool steps' for longer "
+                "multi-step builds."
             )
-            self._set_input_enabled(True)
+            self._set_running(False)
             self._set_status("Halted", "warn")
             return
 
         self._agent_steps += 1
-        self._set_input_enabled(False)
-        
+        self._set_running(True)
+
+        use_native = (self._native_tools_cb.isChecked() and bool(self.assistant.tools))
+
         try:
             client = self.assistant.get_client()
             self._current_streaming_text = ""
-            
-            # Append empty assistant bubble to receive tokens
+
+            if use_native:
+                # Native function-calling: structured, non-streaming turn.
+                self._current_worker = LLMWorker(
+                    client=client,
+                    messages=self.assistant.history,
+                    system_prompt=self.assistant.system_prompt,
+                    stream=False,
+                    parent=self,
+                    tools=self.assistant.tools,
+                    agentic=True,
+                )
+                self._current_worker.started_signal.connect(self._on_worker_started)
+                self._current_worker.agent_finished.connect(self._on_agent_finished)
+                self._current_worker.error.connect(self._on_worker_error)
+                self._current_worker.agent_finished.connect(self._current_worker.deleteLater)
+                self._current_worker.error.connect(self._current_worker.deleteLater)
+                self._current_worker.start()
+                return
+
+            # Legacy streaming + JSON-in-text protocol (fallback).
             self._chat_history.append_message("assistant", "")
-            
-            # Get compiled system instructions containing tool definitions
             compiled_system_prompt = self.assistant.get_compiled_system_prompt()
-            
-            # Start QThread worker
             self._current_worker = LLMWorker(
                 client=client,
                 messages=self.assistant.history,
@@ -578,7 +707,8 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
             self._current_worker.token_received.connect(self._on_token_received)
             self._current_worker.finished.connect(self._on_worker_finished)
             self._current_worker.error.connect(self._on_worker_error)
-            
+            self._current_worker.finished.connect(self._current_worker.deleteLater)
+            self._current_worker.error.connect(self._current_worker.deleteLater)
             self._current_worker.start()
         except Exception as e:
             self._on_worker_error(str(e))
@@ -590,6 +720,33 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         self._provider_combo.setEnabled(enabled)
         self._model_combo.setEnabled(enabled)
         self._mode_combo.setEnabled(enabled)
+
+    def _set_running(self, running: bool) -> None:
+        """Toggle UI between 'request in flight' and 'idle'.
+
+        While running, inputs/Send are disabled and Stop is enabled, so the
+        artist can always abort a stuck model and then switch model or resend.
+        """
+        self._set_input_enabled(not running)
+        self._stop_btn.setEnabled(running)
+
+    def _on_stop(self) -> None:
+        """Abort the in-flight request and hand control back to the artist."""
+        worker = self._current_worker
+        if worker is None:
+            self._set_running(False)
+            return
+        self._stopped = True
+        self._agent_steps = 999  # guarantee the agent loop will not continue
+        try:
+            worker.cancel()  # closes the socket -> unblocks a stuck stream
+        except Exception as e:  # noqa: BLE001
+            _log.debug(f"worker.cancel() failed: {e}")
+        if not self._current_streaming_text:
+            self._chat_history.update_last_message("_(stopped — no response)_")
+        self._current_worker = None
+        self._set_running(False)
+        self._set_status("Stopped by user", "warn")
 
     def _set_status(self, message: str, level: str = "info") -> None:
         """Update status bar text and color dot."""
@@ -610,6 +767,10 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
 
     def _on_worker_finished(self, full_response: str) -> None:
         """Main thread callback when LLM query is fully completed. Parses tool calls."""
+        if self._stopped:
+            self._set_running(False)
+            self._current_worker = None
+            return
         # 1. Commit response to active session history
         self.assistant.add_message("assistant", full_response)
         
@@ -624,6 +785,21 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
             tool = next((t for t in self.assistant.tools if t.name == action), None)
             
             if tool:
+                # Loop guard: if the model proposes the EXACT same call it just
+                # made, it is stuck retrying -- stop instead of burning steps.
+                sig = (action, json.dumps(args, sort_keys=True, default=str))
+                if sig == self._last_tool_sig:
+                    self._chat_history.append_message(
+                        "system",
+                        f"⚠️ Stopped: the model repeated the same '{action}' call. "
+                        "Rephrase your request or adjust the parameters."
+                    )
+                    self._set_running(False)
+                    self._set_status("Halted (repeat)", "warn")
+                    self._current_worker = None
+                    return
+                self._last_tool_sig = sig
+
                 # 3. Query User Approval (modal dialog on main thread)
                 self._set_status("Awaiting Approval...", "working")
                 approved = request_approval(action, args, self)
@@ -665,14 +841,91 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
                 return
         
         # No tool calls proposed; loop finishes. Re-enable input fields.
-        self._set_input_enabled(True)
+        self._set_running(False)
         self._set_status("Done", "done")
         self._current_worker = None
 
+    # Read-only tools execute without an approval prompt; everything else
+    # (scene/disk-modifying or unknown delegated tools) must be approved.
+    _READ_ONLY_TOOLS = {"get_scene_context"}
+
+    def _on_agent_finished(self, resp: object) -> None:
+        """Native function-calling result: run any tool calls, then loop."""
+        if self._stopped:
+            self._set_running(False)
+            self._current_worker = None
+            return
+
+        text = (getattr(resp, "text", "") or "")
+        tool_calls = list(getattr(resp, "tool_calls", []) or [])
+
+        # No tool calls -> final answer.
+        if not tool_calls:
+            self.assistant.add_message("assistant", text)
+            self._chat_history.append_message("assistant", text if text.strip() else "_(no content)_")
+            self._set_running(False)
+            self._set_status("Done", "done")
+            self._current_worker = None
+            return
+
+        # Record the assistant tool-call turn so the next request has context.
+        tc_dicts = [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in tool_calls]
+        self.assistant.add_assistant_tool_calls(text, tc_dicts)
+        if text.strip():
+            self._chat_history.append_message("assistant", text)
+
+        # Repeat guard (first call signature).
+        first = tool_calls[0]
+        sig = (first.name, json.dumps(first.arguments, sort_keys=True, default=str))
+        if sig == self._last_tool_sig:
+            self._chat_history.append_message(
+                "system",
+                f"⚠️ Stopped: the model repeated the same '{first.name}' call. "
+                "Rephrase your request or adjust the parameters."
+            )
+            self._set_running(False)
+            self._set_status("Halted (repeat)", "warn")
+            self._current_worker = None
+            return
+        self._last_tool_sig = sig
+
+        # Execute each requested tool call, gating modifying ones behind approval.
+        for tc in tool_calls:
+            tool = next((t for t in self.assistant.tools if t.name == tc.name), None)
+            if tool is None:
+                self.assistant.add_tool_result(tc.id, tc.name, f"ERROR: tool '{tc.name}' is not registered.")
+                self._chat_history.append_message("system", f"**ERROR**: tool '{tc.name}' not found.")
+                continue
+
+            if tc.name not in self._READ_ONLY_TOOLS:
+                self._set_status("Awaiting Approval...", "working")
+                if not request_approval(tc.name, tc.arguments, self):
+                    self.assistant.add_tool_result(tc.id, tc.name, "Action was rejected by the artist.")
+                    self._chat_history.append_message("system", f"Artist rejected action **{tc.name}**.")
+                    continue
+
+            self._set_status("Executing...", "working")
+            try:
+                res = tool.execute(tc.arguments)
+                res_str = json.dumps(res, indent=2, default=str) if isinstance(res, dict) else str(res)
+                self.assistant.add_tool_result(tc.id, tc.name, res_str)
+                self._chat_history.append_message("system", f"Tool **{tc.name}** executed.")
+            except Exception as ex:  # noqa: BLE001
+                self.assistant.add_tool_result(tc.id, tc.name, f"ERROR: {ex}")
+                self._chat_history.append_message("system", f"**ERROR** running {tc.name}: {ex}")
+
+        self._current_worker = None
+        # Loop: let the model read the tool results and continue.
+        QtCore.QTimer.singleShot(100, self._run_assistant_step)
+
     def _on_worker_error(self, err_msg: str) -> None:
         """Surface background errors to the user UI."""
+        if self._stopped:
+            self._set_running(False)
+            self._current_worker = None
+            return
         self._chat_history.append_message("assistant", f"**ERROR**: {err_msg}")
-        self._set_input_enabled(True)
+        self._set_running(False)
         self._set_status("Error", "error")
         self._current_worker = None
 

@@ -41,6 +41,19 @@ class AIAssistant:
             msg["image_b64"] = image_b64
         self.history.append(msg)
 
+    def add_assistant_tool_calls(self, text: str, tool_calls: List[Dict[str, Any]]) -> None:
+        """Record an assistant turn that requested native tool calls.
+
+        *tool_calls* is a list of ``{"id", "name", "arguments"}`` dicts (kept
+        JSON-serialisable for history persistence + provider re-serialisation).
+        """
+        self.history.append({"role": "assistant", "content": text or "", "tool_calls": tool_calls})
+
+    def add_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
+        """Record the result of a native tool call, linked by *tool_call_id*."""
+        self.history.append({"role": "tool", "tool_call_id": tool_call_id,
+                             "name": name, "content": content})
+
     def get_compiled_system_prompt(self) -> str:
         """Merge base system prompt instructions with registered tool schemas."""
         base = self.system_prompt or "You are a helpful Technical Artist assistant in Houdini."

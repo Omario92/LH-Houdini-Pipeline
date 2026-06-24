@@ -24,35 +24,53 @@ DEFAULT_CONFIG = {
         "anthropic": {
             "api_key": "",
             "api_key_env": "ANTHROPIC_API_KEY",
-            "models": ["claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-5-haiku-20241022"],
-            "active_model": "claude-3-5-sonnet-20241022",
+            "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
+            "active_model": "claude-sonnet-4-6",
             "url": "https://api.anthropic.com/v1/messages"
         },
         "openai": {
             "api_key": "",
             "api_key_env": "OPENAI_API_KEY",
-            "models": ["gpt-4o", "gpt-4o-mini", "o1", "o1-mini"],
-            "active_model": "gpt-4o",
+            "models": ["gpt-5.5", "gpt-5", "gpt-5-mini", "gpt-4.1"],
+            "active_model": "gpt-5.5",
             "url": "https://api.openai.com/v1/chat/completions"
         },
         "gemini": {
             "api_key": "",
             "api_key_env": "GEMINI_API_KEY",
-            "models": ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash-exp"],
-            "active_model": "gemini-1.5-flash",
+            "models": ["gemini-3.1-pro", "gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
+            "active_model": "gemini-3.5-flash",
             "url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         },
         "xai": {
             "api_key": "",
             "api_key_env": "XAI_API_KEY",
-            "models": ["grok-beta", "grok-2", "grok-2-vision-preview"],
-            "active_model": "grok-beta",
+            "models": ["grok-4.3", "grok-4", "grok-3"],
+            "active_model": "grok-4.3",
             "url": "https://api.x.ai/v1/chat/completions"
+        },
+        "openrouter": {
+            "api_key": "",
+            "api_key_env": "OPENROUTER_API_KEY",
+            "models": [
+                "anthropic/claude-opus-4.6",
+                "anthropic/claude-sonnet-4.6",
+                "openai/gpt-5.5",
+                "google/gemini-3.1-pro",
+                "google/gemini-3.5-flash",
+                "google/gemma-4-31b-it:free",
+                "x-ai/grok-4.3",
+                "deepseek/deepseek-v4-flash",
+                "deepseek/deepseek-v4-pro",
+                "nvidia/nemotron-3-ultra-550b-a55b:free"
+            ],
+            "active_model": "anthropic/claude-sonnet-4.6",
+            "url": "https://openrouter.ai/api/v1/chat/completions"
         },
         "ollama": {
             "api_key": "ollama",  # dummy key
             "api_key_env": "",
-            "models": ["llama3.1", "mistral", "codellama", "qwen2.5-coder"],
+            "models": ["llama3.3", "qwen2.5-coder", "deepseek-r1", "mistral"],
             "active_model": "qwen2.5-coder",
             "url": "http://localhost:11434/v1/chat/completions"
         },
@@ -66,6 +84,8 @@ DEFAULT_CONFIG = {
     },
     "temperature": 0.2,
     "max_tokens": 4096,
+    "max_agent_steps": 12,
+    "native_tools": True,
     "use_mcp": False,
     "mcp_server_url": "http://localhost:8000"
 }
@@ -86,17 +106,46 @@ class AssistantConfigManager:
         self.load()
 
     def load(self) -> Config:
-        """Load defaults and merge with any user configuration files."""
+        """Load defaults, merge user overrides, then refresh the provider catalog.
+
+        The provider *catalog* (``models`` + ``url`` + ``api_key_env``) is
+        app-managed and always taken from :data:`DEFAULT_CONFIG`, so updating
+        the bundled model lists reaches existing users whose saved file would
+        otherwise pin a stale ``models`` array (deep-merge replaces lists).
+        User-owned data (``api_key``, ``active_model``, ``active_provider``,
+        ``temperature`` ...) from the saved file is preserved.
+        """
+        import copy
+
         # 1. Start with hardcoded defaults
         cfg = Config(DEFAULT_CONFIG)
 
-        # 2. Try loading from ~/.lh_pipeline/ai_assistant.json
+        # 2. Merge user overrides from ~/.lh_pipeline/ai_assistant.json
         if self._config_file.exists():
             try:
                 user_cfg = ConfigLoader.load(self._config_file)
                 cfg = cfg.merged_with(user_cfg)
             except Exception as e:
                 _log.warning(f"Failed to load user config from {self._config_file}: {e}")
+
+        # 3. Re-assert the app-managed provider catalog over the user file.
+        catalog = {"providers": {}}
+        for prov, pdata in DEFAULT_CONFIG["providers"].items():
+            catalog["providers"][prov] = {
+                "models": list(pdata["models"]),
+                "url": pdata["url"],
+                "api_key_env": pdata.get("api_key_env", ""),
+            }
+        cfg = cfg.merged_with(catalog)
+
+        # 4. Heal any active_model that no longer exists in the refreshed list.
+        data = copy.deepcopy(cfg.as_dict())
+        for prov, pdata in data.get("providers", {}).items():
+            models = pdata.get("models", [])
+            if models and pdata.get("active_model") not in models:
+                default_am = DEFAULT_CONFIG["providers"].get(prov, {}).get("active_model", models[0])
+                pdata["active_model"] = default_am if default_am in models else models[0]
+        cfg = Config(data)
 
         self._current_config = cfg
         return cfg

@@ -237,10 +237,16 @@ class McpTcpServer(QtCore.QObject):
                 # Emit signal to run on main thread (connection must be Qt.QueuedConnection or default if cross-thread)
                 self.request_execution.emit(req_uid, name, arguments)
                 
-                # Wait for main thread to notify us
-                event.wait()
+                # Wait for main thread to notify us, but never block forever:
+                # if the panel/dispatcher never processes (e.g. closed), time out
+                # and reject (fail-closed) rather than hang the client thread.
+                notified = event.wait(timeout=300.0)
                 
                 pending = self._pending_executions.pop(req_uid, None)
+                if not notified:
+                    self._send_error(conn, req_id, -32603,
+                                     f"Tool '{name}' approval timed out (300s).")
+                    return
                 if pending:
                     approved = pending["approved"]
                     if not approved:
@@ -256,13 +262,22 @@ class McpTcpServer(QtCore.QObject):
                         self._send_response(conn, req_id, pending["result"])
                         return
             else:
-                # Direct callback for synchronous environments (e.g. unit tests)
+                # Direct callback for synchronous environments (e.g. unit tests).
+                # FAIL-CLOSED: with no approval mechanism wired, a modifying tool
+                # must be rejected -- never silently execute (e.g. run_python_snippet
+                # = arbitrary code) just because nobody installed a gate.
                 if self.approval_callback:
                     try:
                         approved = self.approval_callback(name, arguments)
                     except Exception as e:
                         _log.error(f"Approval callback failed: {e}")
                         approved = False
+                else:
+                    _log.warning(
+                        f"Rejecting modifying tool '{name}': no approval_callback "
+                        "configured (fail-closed)."
+                    )
+                    approved = False
 
                 if not approved:
                     result = {
@@ -298,13 +313,20 @@ class McpTcpServer(QtCore.QObject):
         if not pending:
             return
 
-        approved = True
+        # FAIL-CLOSED: default to rejected unless an approval callback explicitly
+        # approves. A missing callback must never green-light a modifying tool.
+        approved = False
         if self.approval_callback:
             try:
                 approved = self.approval_callback(name, arguments)
             except Exception as e:
                 _log.error(f"Approval callback failed: {e}")
                 approved = False
+        else:
+            _log.warning(
+                f"Rejecting modifying tool '{name}' on main thread: "
+                "no approval_callback configured (fail-closed)."
+            )
 
         pending["approved"] = approved
         if approved:

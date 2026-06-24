@@ -32,9 +32,27 @@ class ActionApprovalDialog(QtWidgets.QDialog):
         self.setWindowTitle("AI Action Approval Required")
         self.setMinimumSize(500, 350)
         self.setModal(True)
+        # Houdini + alt-tab hardening: a plain modal QDialog can lose activation
+        # when the artist switches apps and comes back, ending up behind another
+        # window and unclickable. ApplicationModal + StaysOnTop + raise/activate
+        # on show keeps the approval prompt foremost and interactive.
+        self.setWindowModality(QtCore.Qt.ApplicationModal)
+        self.setWindowFlags(
+            self.windowFlags() | QtCore.Qt.Dialog | QtCore.Qt.WindowStaysOnTopHint
+        )
 
         self._build_ui()
         _style.apply(self)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """Force the dialog foremost + active so its buttons always take clicks."""
+        super().showEvent(event)
+        self.raise_()
+        self.activateWindow()
+
+    def focusInEvent(self, event) -> None:  # noqa: N802
+        super().focusInEvent(event)
+        self.raise_()
 
     def _build_ui(self) -> None:
         """Construct visual elements including title, details text box, and buttons."""
@@ -145,7 +163,17 @@ def request_approval(action_name: str, arguments: Dict[str, Any], parent: Option
     Returns:
         True if the user approved the action, False otherwise.
     """
+    if parent is None:
+        try:
+            import hou  # noqa: PLC0415
+            parent = hou.qt.mainWindow()
+        except Exception:  # noqa: BLE001
+            parent = None
+
     dialog = ActionApprovalDialog(action_name, arguments, parent)
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
     result = dialog.exec()
     # PySide6/2 QDialog returns Accepted (1) or Rejected (0)
     # Re-evaluate enum safely

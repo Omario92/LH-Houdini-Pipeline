@@ -198,27 +198,24 @@ class RunPythonSnippetTool(AITool):
         try:
             # Execute Python snippet
             exec(code, exec_globals, exec_locals)
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-            
-            stdout_str = buffer_out.getvalue()
-            stderr_str = buffer_err.getvalue()
-
             return {
                 "success": True,
-                "stdout": stdout_str,
-                "stderr": stderr_str,
+                "stdout": buffer_out.getvalue(),
+                "stderr": buffer_err.getvalue(),
                 "message": "Script executed successfully."
             }
-        except Exception as e:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
+        except BaseException as e:  # noqa: BLE001 -- also catch KeyboardInterrupt/SystemExit
             return {
                 "success": False,
                 "error": f"Execution error: {e}",
                 "stdout": buffer_out.getvalue(),
                 "stderr": buffer_err.getvalue()
             }
+        finally:
+            # ALWAYS restore the streams, even on KeyboardInterrupt/SystemExit,
+            # so a bad snippet can never leave Houdini's stdout redirected.
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
 
 class GenerateHdaScaffoldTool(AITool):
