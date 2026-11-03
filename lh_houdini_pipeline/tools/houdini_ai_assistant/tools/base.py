@@ -31,6 +31,19 @@ class AITool(ABC):
         """The JSON Schema parameter description for the tool (OpenAPI/MCP compatible)."""
         pass
 
+    @property
+    def read_only(self) -> bool:
+        """Whether the tool only inspects state and never modifies scene or disk.
+
+        Approval gating is FAIL-CLOSED: the default is ``False``, so every tool
+        (including new or delegated ones) needs artist approval unless it
+        explicitly opts in as read-only by overriding this property.
+
+        Returns:
+            ``True`` only for tools that are safe to run without approval.
+        """
+        return False
+
     @abstractmethod
     def execute(self, arguments: Dict[str, Any]) -> Any:
         """Execute the tool logic with the provided arguments.
@@ -42,3 +55,18 @@ class AITool(ABC):
             The execution result (typically a string or serializable structure).
         """
         pass
+
+
+def requires_approval(tool: AITool) -> bool:
+    """Return whether *tool* must be approved by the artist before running.
+
+    Single source of truth shared by the chat panel and the MCP TCP server, so
+    both entry points gate the same set of tools.
+
+    Args:
+        tool: The tool about to be executed.
+
+    Returns:
+        ``True`` unless the tool declares itself read-only.
+    """
+    return not bool(getattr(tool, "read_only", False))

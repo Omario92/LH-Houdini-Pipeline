@@ -18,6 +18,7 @@
 - Completed Phase 5: Upgraded programmatic HDA scaffolding tool with parameter template conversions, dynamic PythonModule/OnCreated event script packaging, expanded HDA Architect system prompts, and wrote comprehensive unit tests.
 - Completed Phase 6: Implemented socket-based MCP TCP Server and Client delegation, signal-based thread dispatching for HOM safety, approval callback gates, PySide6 UI panels, and integration unit tests.
 - Completed Phase 7: Integrated pipeline tool bindings (Project Manager create project & Camera Manager turntable orbit), added AI Assistant to lh_pipeline.shelf, polished UI elements and bubbles using theme style tokens, hardened MCP client/server error handling and timeouts, and generated detailed user documentation.
+- Fixed MCP TCP server approval gating: pipeline tools (project_manager_create_project, camera_manager_create_turntable) and layout_network previously ran without approval; policy is now fail-closed via `AITool.read_only` / `requires_approval()` shared by server and panel.
 ---
 
 ## Houdini Reference & Rules

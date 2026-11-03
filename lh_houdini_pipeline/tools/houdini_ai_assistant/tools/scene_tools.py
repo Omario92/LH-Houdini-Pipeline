@@ -21,6 +21,11 @@ class GetSceneContextTool(AITool):
         return "get_scene_context"
 
     @property
+    def read_only(self) -> bool:
+        """Scene inspection never modifies the scene; no approval needed."""
+        return True
+
+    @property
     def description(self) -> str:
         return (
             "Retrieve detailed information about the active Houdini scene, including the "
