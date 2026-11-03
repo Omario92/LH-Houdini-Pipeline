@@ -26,12 +26,16 @@ class McpClient:
     Allows the AI Assistant to discover and delegate tool executions.
     """
 
-    def __init__(self, server_url: str) -> None:
+    def __init__(self, server_url: str, auth_file: Optional[str] = None) -> None:
         """
         Args:
             server_url: The connection string (e.g. 'tcp://localhost:14848' or 'http://localhost:8000').
+            auth_file: Optional LH credential file (see ``mcp.auth``). When it
+                holds a token, TCP connections perform the ``lhAuth``
+                handshake required by an authenticated LH Houdini server.
         """
         self.server_url = server_url.strip()
+        self.auth_file = auth_file
         self.tools: List[Dict[str, Any]] = []
         self._is_connected = False
         
@@ -81,6 +85,44 @@ class McpClient:
 
     # -- TCP Socket Transport Implementation ---------------------------------
 
+    def _open_tcp(self, host: str, port: int, timeout: float) -> socket.socket:
+        """Open a TCP connection, authenticating when a credential is set.
+
+        Args:
+            host: Server host.
+            port: Server port.
+            timeout: Socket timeout in seconds.
+
+        Returns:
+            A connected (and, if needed, authenticated) socket.
+
+        Raises:
+            OSError: On connection failure or rejected token.
+        """
+        s = socket.create_connection((host, port), timeout=timeout)
+        token = None
+        if self.auth_file:
+            from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.auth import read_credential
+            record = read_credential(self.auth_file)
+            token = record.get("token") if record else None
+        if not token:
+            return s
+        try:
+            s.sendall((json.dumps({"lhAuth": token}) + "\n").encode("utf-8"))
+            buf = b""
+            while b"\n" not in buf and len(buf) <= 4096:
+                chunk = s.recv(4096)
+                if not chunk:
+                    raise OSError("Server closed during authentication.")
+                buf += chunk
+            reply = json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+            if not isinstance(reply, dict) or reply.get("lhAuth") != "ok":
+                raise OSError("MCP server rejected the auth token.")
+        except BaseException:
+            s.close()
+            raise
+        return s
+
     def _connect_tcp(self) -> bool:
         """Perform handshake and query tool list over TCP socket."""
         try:
@@ -91,7 +133,7 @@ class McpClient:
             port = 14848
 
         try:
-            with socket.create_connection((host, port), timeout=5) as s:
+            with self._open_tcp(host, port, timeout=5) as s:
                 # 1. Send initialize
                 init_req = {
                     "jsonrpc": "2.0",
@@ -167,7 +209,7 @@ class McpClient:
             port = 14848
 
         try:
-            with socket.create_connection((host, port), timeout=10) as s:
+            with self._open_tcp(host, port, timeout=10) as s:
                 # Re-initialize for this command transaction
                 init_req = {
                     "jsonrpc": "2.0",

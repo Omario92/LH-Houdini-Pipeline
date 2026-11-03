@@ -19,6 +19,7 @@
 - Completed Phase 6: Implemented socket-based MCP TCP Server and Client delegation, signal-based thread dispatching for HOM safety, approval callback gates, PySide6 UI panels, and integration unit tests.
 - Completed Phase 7: Integrated pipeline tool bindings (Project Manager create project & Camera Manager turntable orbit), added AI Assistant to lh_pipeline.shelf, polished UI elements and bubbles using theme style tokens, hardened MCP client/server error handling and timeouts, and generated detailed user documentation.
 - Fixed MCP TCP server approval gating: pipeline tools (project_manager_create_project, camera_manager_create_turntable) and layout_network previously ran without approval; policy is now fail-closed via `AITool.read_only` / `requires_approval()` shared by server and panel.
+- MCP stdio bridge support (`scripts/lh_mcp_stdio.py`): server now listens on the Windows named pipe `\\.\pipe\lh-houdini-mcp` + token-authenticated TCP; per-start token written to `%LOCALAPPDATA%/LH-Houdini-Pipeline/mcp-auth.json`; new shelf tool "Houdini MCP"; tests in `test_mcp_bridge.py`.
 ---
 
 ## Houdini Reference & Rules

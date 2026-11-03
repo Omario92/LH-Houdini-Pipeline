@@ -712,12 +712,16 @@ def _test_mcp_integration() -> None:
     server._tools = [DummyTool()]
     
     # Port 14849 to avoid collision
-    ok = server.start(port=14849)
+    auth_file = os.path.join(temp_dir, "mcp-auth.json")
+    ok = server.start(port=14849, auth_file=auth_file)
     assert ok is True, "Failed to start McpTcpServer"
     assert server.is_running() is True
-    
-    # 2. Connect Client
-    client = McpClient("tcp://127.0.0.1:14849")
+
+    # Without the run token the authenticated server must refuse the client.
+    assert McpClient("tcp://127.0.0.1:14849").connect() is False
+
+    # 2. Connect Client (with the credential written by start())
+    client = McpClient("tcp://127.0.0.1:14849", auth_file=auth_file)
     connected = client.connect()
     assert connected is True, "McpClient failed to connect to McpTcpServer"
     
@@ -766,6 +770,7 @@ def _test_mcp_integration() -> None:
     # 6. Stop Server
     server.stop()
     assert server.is_running() is False
+    assert not os.path.exists(auth_file), "credential file must be removed on stop"
 
 check("MCP Client/Server TCP integration", _test_mcp_integration)
 
