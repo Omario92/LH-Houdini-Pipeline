@@ -28,13 +28,31 @@ from lh_houdini_pipeline.tools.houdini_ai_assistant.core.client import (
 
 PASS = "\033[32mOK\033[0m"
 FAIL = "\033[31mFAIL\033[0m"
+SKIP = "\033[33mSKIP\033[0m"
 errors = []
+
+
+class _Skip(Exception):
+    """Raised by a test whose optional runtime (e.g. PySide) is unavailable."""
+
+
+def _require_qt() -> None:
+    """Skip the calling test when neither PySide6 nor PySide2 is importable."""
+    try:
+        import PySide6  # noqa: F401
+    except ImportError:
+        try:
+            import PySide2  # noqa: F401
+        except ImportError:
+            raise _Skip("PySide not installed")
 
 
 def check(label: str, fn: callable) -> None:
     try:
         fn()
         print("  " + label.ljust(45) + " " + PASS)
+    except _Skip as s:
+        print("  " + label.ljust(45) + " " + SKIP + "  " + str(s))
     except Exception as e:
         print("  " + label.ljust(45) + " " + FAIL + "  " + str(e))
         errors.append((label, e))
@@ -668,6 +686,7 @@ check("GenerateHdaScaffoldTool execute", _test_hda_scaffold_tool_execute)
 
 
 def _test_mcp_integration() -> None:
+    _require_qt()
     from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.server import McpTcpServer
     from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.client import McpClient, DelegatedMcpTool
     from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.base import AITool
@@ -676,6 +695,9 @@ def _test_mcp_integration() -> None:
         @property
         def name(self) -> str:
             return "dummy_tool"
+        @property
+        def read_only(self) -> bool:
+            return True  # opt out of approval so step 4 runs ungated
         @property
         def description(self) -> str:
             return "A dummy tool for testing."
@@ -751,6 +773,7 @@ check("MCP Client/Server TCP integration", _test_mcp_integration)
 def _test_mcp_server_fail_closed() -> None:
     """REGRESSION: a modifying tool must be REJECTED when no approval callback
     is wired (fail-closed). Guards against unauthenticated socket RCE."""
+    _require_qt()
     from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.server import McpTcpServer
     from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.base import AITool
 
@@ -792,6 +815,72 @@ def _test_mcp_server_fail_closed() -> None:
 
 
 check("MCP server fail-closed (no approval => reject)", _test_mcp_server_fail_closed)
+
+
+def _test_approval_policy() -> None:
+    """REGRESSION: approval policy is fail-closed and shared by panel + server.
+
+    Previously the MCP server used a hard-coded deny-list that omitted the
+    pipeline tools, so they ran without approval over TCP.
+    """
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.tools import get_default_tools
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.base import requires_approval
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.client import DelegatedMcpTool
+
+    tools = {t.name: t for t in get_default_tools()}
+    read_only = {n for n, t in tools.items() if not requires_approval(t)}
+    assert read_only == {"get_scene_context"}, f"unexpected read-only tools: {read_only}"
+    for name in ("create_node", "set_parm", "layout_network", "run_python_snippet",
+                 "generate_hda_scaffold", "project_manager_create_project",
+                 "camera_manager_create_turntable"):
+        assert name in tools, f"default tool '{name}' missing"
+        assert requires_approval(tools[name]), f"'{name}' must require approval"
+
+    # Unknown/delegated tools must default to requiring approval.
+    delegated = DelegatedMcpTool("ext_tool", "", {}, client=MagicMock())
+    assert requires_approval(delegated)
+
+check("Approval policy fail-closed (shared)", _test_approval_policy)
+
+
+def _test_mcp_server_gates_all_default_tools() -> None:
+    """REGRESSION: every non-read-only default tool is rejected by the MCP
+    server without an approval gate (pipeline tools were executed before)."""
+    _require_qt()
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.server import McpTcpServer
+    from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.base import requires_approval
+
+    server = McpTcpServer()
+    server.use_thread_dispatch = False
+    server.approval_callback = None
+
+    executed = []
+    for tool in server._tools:
+        # Spy on the instance so no real hou / filesystem work happens.
+        tool.execute = (lambda n: (lambda args: executed.append(n) or {"success": True}))(tool.name)
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.sent = []
+        def sendall(self, data) -> None:
+            self.sent.append(data)
+
+    gated = [t for t in server._tools if requires_approval(t)]
+    assert gated, "expected modifying tools in the default registry"
+    for tool in gated:
+        conn = FakeConn()
+        server._handle_tools_call(conn, 1, {"name": tool.name, "arguments": {}})
+        resp = json.loads(conn.sent[-1].decode("utf-8"))
+        assert resp["result"]["isError"] is True, f"'{tool.name}' not rejected"
+    assert not executed, f"FAIL-OPEN: executed without approval: {executed}"
+
+    # With an approving callback, a gated tool does execute.
+    server.approval_callback = lambda name, args: True
+    conn = FakeConn()
+    server._handle_tools_call(conn, 2, {"name": "project_manager_create_project", "arguments": {}})
+    assert executed == ["project_manager_create_project"], executed
+
+check("MCP server gates all modifying default tools", _test_mcp_server_gates_all_default_tools)
 
 
 def _test_pipeline_tools() -> None:

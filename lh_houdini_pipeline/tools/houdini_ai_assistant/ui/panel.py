@@ -17,6 +17,7 @@ from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.houdini_ai_assistant.config import AssistantConfigManager
 from lh_houdini_pipeline.tools.houdini_ai_assistant.core.assistant import AIAssistant
 from lh_houdini_pipeline.tools.houdini_ai_assistant.prompts.manager import PromptManager
+from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.base import requires_approval
 from lh_houdini_pipeline.tools.houdini_ai_assistant.ui.approval import request_approval
 from lh_houdini_pipeline.tools.houdini_ai_assistant.ui.chat import ChatHistoryView
 from lh_houdini_pipeline.tools.houdini_ai_assistant.utils.async_utils import LLMWorker
@@ -845,10 +846,6 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         self._set_status("Done", "done")
         self._current_worker = None
 
-    # Read-only tools execute without an approval prompt; everything else
-    # (scene/disk-modifying or unknown delegated tools) must be approved.
-    _READ_ONLY_TOOLS = {"get_scene_context"}
-
     def _on_agent_finished(self, resp: object) -> None:
         """Native function-calling result: run any tool calls, then loop."""
         if self._stopped:
@@ -897,7 +894,9 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
                 self._chat_history.append_message("system", f"**ERROR**: tool '{tc.name}' not found.")
                 continue
 
-            if tc.name not in self._READ_ONLY_TOOLS:
+            # Read-only tools run without a prompt; everything else (scene/disk-
+            # modifying or unknown delegated tools) must be approved.
+            if requires_approval(tool):
                 self._set_status("Awaiting Approval...", "working")
                 if not request_approval(tc.name, tc.arguments, self):
                     self.assistant.add_tool_result(tc.id, tc.name, "Action was rejected by the artist.")

@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Callable
 
 from lh_houdini_pipeline.core.logger import get_logger
 from lh_houdini_pipeline.tools.houdini_ai_assistant.tools import get_default_tools
-from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.base import AITool
+from lh_houdini_pipeline.tools.houdini_ai_assistant.tools.base import AITool, requires_approval
 
 _log = get_logger(__name__)
 
@@ -219,7 +219,10 @@ class McpTcpServer(QtCore.QObject):
             self._send_error(conn, req_id, -32601, f"Tool not found: '{name}'")
             return
 
-        is_modifying = name in ("create_node", "set_parm", "run_python_snippet", "generate_hda_scaffold")
+        # Fail-closed: anything not explicitly read-only (incl. pipeline tools
+        # such as project_manager_create_project) goes through approval and,
+        # in the panel, runs on the main thread.
+        is_modifying = requires_approval(tool)
         approved = True
 
         # Check approval callbacks or main-thread dispatching
