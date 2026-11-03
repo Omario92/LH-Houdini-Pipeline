@@ -25,3 +25,7 @@ dist/
 # Local configuration overrides
 local_config.json
 *.local
+
+# MCP credential records (secret run tokens)
+*mcp-auth*.json
+.mcp-auth-*

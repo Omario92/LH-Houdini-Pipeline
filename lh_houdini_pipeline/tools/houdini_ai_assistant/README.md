@@ -21,7 +21,7 @@ A scene-aware, agentic, and thread-safe AI assistant parented natively to Houdin
    - Autogenerates subnets, compiles Houdini Digital Assets (HDAs), injects custom parameter templates (Float, Int, String, Toggle, Button, File), and configures custom `PythonModule` code and `OnCreated` scripts.
 
 4. **Model Context Protocol (MCP) Integration**:
-   - **Internal TCP Server**: Hosts a lightweight, multi-threaded TCP socket-based JSON-RPC 2.0 server. Allows external C-suite agents to query context and request HOM operations. Incoming socket requests are dispatched via Qt signals and execution is blocked until approved by the artist.
+   - **Internal MCP Server**: Hosts a lightweight, multi-threaded JSON-RPC 2.0 server over a Windows named pipe and/or token-authenticated loopback TCP (see *Connecting an external MCP client*). Allows external C-suite agents to query context and request HOM operations. Incoming socket requests are dispatched via Qt signals and execution is blocked until approved by the artist.
    - **External Client Delegation**: Connects to other TCP (`tcp://127.0.0.1:14848`) or HTTP (`http://localhost:8000`) MCP servers, dynamically loading external tools as native operations in the assistant.
 
 5. **Integrated Pipeline Bindings**:
@@ -86,9 +86,73 @@ The tool configures settings under `~/.lh_pipeline/ai_assistant.json`. Main conf
 
 ---
 
+## Connecting an external MCP client (Claude Desktop / Claude Code)
+
+External clients talk **stdio** to `scripts/lh_mcp_stdio.py`, a small pure
+stdlib bridge. The bridge forwards each message to the running Houdini session
+over a **Windows named pipe** (`\\.\pipe\lh-houdini-mcp`), or over
+authenticated loopback TCP with `--tcp`.
+
+**1. Start the server inside Houdini.** Use one of:
+- the **LH Pipeline > Houdini MCP** shelf button (toggles a standalone server), or
+- the AI Assistant panel: *Start MCP Server (named pipe + TCP)*.
+
+Each start generates a new random token and writes it to the credential file
+`%LOCALAPPDATA%/LH-Houdini-Pipeline/mcp-auth.json` (override with
+`$LH_MCP_AUTH_FILE`). Stopping the server deletes the file. Only one server
+can own the pipe/port at a time.
+
+**2. Register the bridge in the client's MCP config** (`claude_desktop_config.json`
+or a project `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "lh-houdini": {
+      "command": "C:/Program Files/Side Effects Software/Houdini 22.0.368/python313/python.exe",
+      "args": [
+        "F:/HOUDINI/LH-Houdini-Pipeline/scripts/lh_mcp_stdio.py",
+        "--pipe",
+        "\\\\.\\pipe\\lh-houdini-mcp",
+        "--auth-file",
+        "C:/Users/ADMIN/AppData/Local/LH-Houdini-Pipeline/mcp-auth.json"
+      ]
+    }
+  }
+}
+```
+
+Adjust these paths for each machine:
+- `command`: any Python 3.8+ works, because the bridge is pure stdlib.
+- The script path.
+- `--auth-file`: you can drop it entirely, since its default is the same
+  `%LOCALAPPDATA%` path the server writes to.
+
+TCP fallback: `--tcp --port 14848` instead of `--pipe`.
+
+**3. Approvals still apply.** Every non-read-only tool opens the approval
+dialog in Houdini (see `AITool.read_only`). If you don't answer within 300 s,
+the call is rejected.
+
+If Houdini is not running, or the server is stopped, the bridge answers every
+request with *"Cannot reach the Houdini MCP server ... start the 'LH Pipeline >
+Houdini MCP' shelf tool."* It re-reads the credential file on every reconnect,
+so restarting the server (new token) needs no client restart.
+
 ## MCP TCP Socket Protocol (JSON-RPC 2.0)
 
 Both client and server support newline-delimited JSON packets over TCP sockets to bypass stdio redirection limits.
+On the named pipe, each `multiprocessing` message frame carries one JSON line;
+authentication there is the `multiprocessing` authkey challenge, keyed with the
+run token.
+
+### 0. Authentication (TCP, required by default)
+The first line must carry the token from the credential file:
+```json
+{"lhAuth": "<token from mcp-auth.json>"}
+```
+**Response**: `{"lhAuth": "ok"}`. On a wrong or missing token the response is `{"lhAuth": "denied"}` and the server closes the connection.
+JSON-RPC notifications (messages without `id`, e.g. `notifications/initialized`) never get a response. `ping` returns `{}`.
 
 ### 1. Handshake (initialize)
 ```json

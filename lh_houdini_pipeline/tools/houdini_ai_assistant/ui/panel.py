@@ -23,6 +23,7 @@ from lh_houdini_pipeline.tools.houdini_ai_assistant.ui.chat import ChatHistoryVi
 from lh_houdini_pipeline.tools.houdini_ai_assistant.utils.async_utils import LLMWorker
 from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.server import McpTcpServer
 from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp.client import McpClient, DelegatedMcpTool
+from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp import auth as _mcp_auth
 from lh_houdini_pipeline.ui import style as _style
 
 _log = get_logger(__name__)
@@ -237,11 +238,17 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
         layout.addWidget(client_group)
 
         # Group 2: Host Internal MCP TCP Server
-        server_group = QtWidgets.QGroupBox("Host Internal Houdini MCP TCP Server")
+        server_group = QtWidgets.QGroupBox("Host Internal Houdini MCP Server")
         server_layout = QtWidgets.QVBoxLayout(server_group)
         server_layout.setSpacing(8)
 
-        self._mcp_server_cb = QtWidgets.QCheckBox("Start MCP TCP Server")
+        self._mcp_server_cb = QtWidgets.QCheckBox(
+            "Start MCP Server (named pipe + TCP)" if os.name == "nt" else "Start MCP TCP Server"
+        )
+        self._mcp_server_cb.setToolTip(
+            "Authenticated server for scripts/lh_mcp_stdio.py. A new token is "
+            "written to " + str(_mcp_auth.default_auth_file()) + " on every start."
+        )
         self._mcp_server_cb.stateChanged.connect(self._on_mcp_server_toggle)
         server_layout.addWidget(self._mcp_server_cb)
 
@@ -509,7 +516,9 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
                 port = 14848
                 self._mcp_port_edit.setText(str(port))
             
-            self._mcp_server.start(port=port)
+            # Windows: also listen on the named pipe used by lh_mcp_stdio.py.
+            pipe = _mcp_auth.DEFAULT_PIPE if os.name == "nt" else None
+            self._mcp_server.start(port=port, pipe_name=pipe)
         else:
             self._mcp_server.stop()
 
@@ -562,8 +571,13 @@ class AIAssistantPanel(QtWidgets.QMainWindow):
 
         self._set_status("Connecting to MCP...", "working")
         
-        # Connect to client dynamically
-        client = McpClient(url)
+        # Connect to client dynamically. A local LH server requires the run
+        # token, so pass the credential file for loopback URLs.
+        auth_file = None
+        if any(h in url for h in ("127.0.0.1", "localhost")):
+            cred = _mcp_auth.default_auth_file()
+            auth_file = str(cred) if cred.exists() else None
+        client = McpClient(url, auth_file=auth_file)
         if client.connect():
             ext_tools = client.list_tools()
             loaded_count = 0

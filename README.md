@@ -264,6 +264,7 @@ python test_asset_ingest.py     # ingest naming/textures/drop (17)
 python test_lookdev.py          # light-rig math + calibration(24)
 python test_tex_to_mtlx.py  test_materialx_tx.py  test_lops_asset_builder.py
 python test_project_manager.py  test_camera_manager.py
+python test_ai_assistant.py  test_mcp_bridge.py   # AI assistant + MCP bridge (Qt parts SKIP w/o PySide)
 ```
 
 Houdini-only behaviour (node creation, parm values, USD authoring, PySide) is

@@ -10,6 +10,7 @@
     <memberTool name="lh_asset_ingest"/>
     <memberTool name="lh_lookdev_builder"/>
     <memberTool name="lh_ai_assistant"/>
+    <memberTool name="lh_houdini_mcp"/>
   </toolshelf>
 
   <tool name="lh_project_manager" label="Project Mgr" icon="MISC_digital_asset">
@@ -73,6 +74,14 @@ launch()
     <script scriptType="python"><![CDATA[
 from lh_houdini_pipeline.tools.houdini_ai_assistant import launch
 launch()
+]]></script>
+  </tool>
+
+  <tool name="lh_houdini_mcp" label="Houdini MCP" icon="MISC_generic">
+    <helpText><![CDATA[Start/stop the Houdini MCP server for external clients (scripts/lh_mcp_stdio.py). Named pipe on Windows + authenticated loopback TCP; modifying tools still need approval.]]></helpText>
+    <script scriptType="python"><![CDATA[
+from lh_houdini_pipeline.tools.houdini_ai_assistant.mcp import launch as lh_mcp_launch
+lh_mcp_launch.toggle()
 ]]></script>
   </tool>
 </shelfDocument>
